@@ -6,7 +6,7 @@
  * implementations that drift apart.
  */
 
-import type { Token } from './chain';
+import { chainOf, type Token } from './chain';
 import { client, quoteLadder, ladder, bestRoute, interpolate, isMultiHop } from './quote';
 import { hopCostInToken, gasPriceWei, GAS_PER_EXTRA_HOP } from './gas';
 import { quoteCache } from './serve';
@@ -16,14 +16,15 @@ async function compute(tokenIn: Token, tokenOut: Token, amountIn: bigint) {
   // The block is read alongside the quotes rather than after them, so the
   // number reported is the height the prices belong to. Provenance is the
   // whole product here; "roughly now" is not good enough.
-  const gasWei = await gasPriceWei();
+  const chain = chainOf(tokenIn);
+  const gasWei = await gasPriceWei(chain);
 
   // The gas conversion does not depend on the route, so it goes out with
   // the ladder rather than after it. Awaiting it separately added a full
   // round trip to every quote.
   const [curves, blockNumber, hopCost] = await Promise.all([
     quoteLadder(tokenIn, tokenOut, sizes),
-    client().getBlockNumber(),
+    client(chain).getBlockNumber(),
     hopCostInToken(tokenOut, gasWei),
   ]);
 
@@ -32,6 +33,7 @@ async function compute(tokenIn: Token, tokenOut: Token, amountIn: bigint) {
   const best = bestRoute(curves, amountIn, hopCost);
 
   return {
+    chain: { key: chain.key, id: chain.id, name: chain.name },
     tokenIn,
     tokenOut,
     amountIn,
@@ -58,9 +60,9 @@ async function compute(tokenIn: Token, tokenOut: Token, amountIn: bigint) {
 
 export type Solved = NonNullable<Awaited<ReturnType<typeof compute>>>;
 
-/** `value` is null when no venue on Base has liquidity for the pair. */
+/** `value` is null when no venue on the tokens' chain has liquidity for the pair. */
 export async function solveQuote(tokenIn: Token, tokenOut: Token, amountIn: bigint) {
-  const key = `${tokenIn.symbol}:${tokenOut.symbol}:${amountIn}`;
+  const key = `${tokenIn.chainId}:${tokenIn.symbol}:${tokenOut.symbol}:${amountIn}`;
   const { value, hit } = await quoteCache.get(key, () => compute(tokenIn, tokenOut, amountIn));
   return { value: value as Solved | null, hit };
 }

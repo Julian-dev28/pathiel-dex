@@ -8,7 +8,7 @@
  * themselves the ETH price. We ask them what the gas is worth.
  */
 
-import { type Token, WETH, UNIV3_QUOTER, UNIV3_FEE_TIERS } from './chain';
+import { chainOf, type ChainConfig, type Token } from './chain';
 import { parseAbi } from 'viem';
 import { client } from './quote';
 import { quoterV2Abi } from './abis';
@@ -26,13 +26,13 @@ const QUOTER = parseAbi(quoterV2Abi);
  */
 export const GAS_PER_EXTRA_HOP = 70_000n;
 
-export async function gasPriceWei(): Promise<bigint> {
+export async function gasPriceWei(chain: ChainConfig): Promise<bigint> {
   try {
-    return await client().getGasPrice();
+    return await client(chain).getGasPrice();
   } catch {
-    // Base is an L2 with a fee floor around 0.01 gwei; if the endpoint is
-    // unreachable, a stale-but-plausible number beats failing the whole quote.
-    return 10_000_000n;
+    // Both chains are L2s with a fee floor; if the endpoint is unreachable, a
+    // stale-but-plausible number beats failing the whole quote.
+    return chain.fallbackGasWei;
   }
 }
 
@@ -53,21 +53,25 @@ const priceCache = new Map<string, { value: bigint; expires: number }>();
 const PRICE_TTL_MS = 60_000;
 
 async function wethPriceIn(token: Token, probeWei: bigint): Promise<bigint> {
-  const key = token.address.toLowerCase();
+  const chain = chainOf(token);
+  // Uniswap V3 is the first deployment on every chain, and the one with the
+  // deepest WETH pools.
+  const uni = chain.v3[0];
+  const key = `${chain.id}:${token.address.toLowerCase()}`;
   const hit = priceCache.get(key);
   if (hit && hit.expires > Date.now()) return hit.value;
 
   let best = 0n;
   try {
     const results = await Promise.allSettled(
-      UNIV3_FEE_TIERS.map((fee) =>
-        client().readContract({
-          address: UNIV3_QUOTER,
+      uni.feeTiers.map((fee) =>
+        client(chain).readContract({
+          address: uni.quoter,
           abi: QUOTER,
           functionName: 'quoteExactInputSingle',
           args: [
             {
-              tokenIn: WETH.address,
+              tokenIn: chain.weth.address,
               tokenOut: token.address,
               amountIn: probeWei,
               fee,
@@ -92,11 +96,12 @@ async function wethPriceIn(token: Token, probeWei: bigint): Promise<bigint> {
 
 /** What one extra hop costs, expressed in `tokenOut` base units. */
 export async function hopCostInToken(tokenOut: Token, gasWei?: bigint): Promise<bigint> {
-  const price = gasWei ?? (await gasPriceWei());
+  const chain = chainOf(tokenOut);
+  const price = gasWei ?? (await gasPriceWei(chain));
   const costWei = price * GAS_PER_EXTRA_HOP;
   if (costWei <= 0n) return 0n;
 
-  if (tokenOut.address.toLowerCase() === WETH.address.toLowerCase()) return costWei;
+  if (tokenOut.address.toLowerCase() === chain.weth.address.toLowerCase()) return costWei;
 
   // Quote a thousand times the gas amount: a few cents of ETH rounds to zero
   // output on a 6-decimal token, so the ratio is taken at a size the pool can

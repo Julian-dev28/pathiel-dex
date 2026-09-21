@@ -1,7 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { TOKENS, bySymbol, EXPLORER } from '@/lib/chain';
+import { bySymbol } from '@/lib/chain';
+import { usePair } from './ChainProvider';
 import { sig, bps, addr } from '@/lib/format';
 import { TokenSelect } from './TokenSelect';
 import { CycleRoute } from './CycleRoute';
@@ -70,16 +71,15 @@ const SLIPPAGE_CHOICES = [10, 30, 50, 100];
  * all still here, one click down.
  */
 export function ToolsView() {
-  const [inSym, setInSym] = useState('WETH');
-  const [outSym, setOutSym] = useState('USDC');
+  const { chain, inSym, outSym, setInSym, setOutSym } = usePair();
   const [amount, setAmount] = useState('1');
   const [slippageBps, setSlippageBps] = useState(50);
   const [data, setData] = useState<Analysis | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const tokenIn = useMemo(() => bySymbol(inSym), [inSym]);
-  const tokenOut = useMemo(() => bySymbol(outSym), [outSym]);
+  const tokenIn = useMemo(() => bySymbol(inSym, chain), [inSym, chain]);
+  const tokenOut = useMemo(() => bySymbol(outSym, chain), [outSym, chain]);
 
   const abortRef = useRef<AbortController | null>(null);
   const run = useCallback(async () => {
@@ -89,7 +89,7 @@ export function ToolsView() {
     setLoading(true);
     try {
       const res = await fetch(
-        `/api/analyze?in=${inSym}&out=${outSym}&amount=${encodeURIComponent(amount)}&slippage=${slippageBps}`,
+        `/api/analyze?chain=${chain.key}&in=${inSym}&out=${outSym}&amount=${encodeURIComponent(amount)}&slippage=${slippageBps}`,
         { signal: ctrl.signal, cache: 'no-store' },
       );
       const body = await res.json();
@@ -106,7 +106,7 @@ export function ToolsView() {
     } finally {
       if (!ctrl.signal.aborted) setLoading(false);
     }
-  }, [inSym, outSym, amount, slippageBps]);
+  }, [chain.key, inSym, outSym, amount, slippageBps]);
 
   useEffect(() => {
     const t = setTimeout(run, 400);
@@ -132,9 +132,9 @@ export function ToolsView() {
             onChange={(e) => setAmount(e.target.value)}
             aria-label="Amount"
           />
-          <TokenSelect value={inSym} onChange={setInSym} tokens={TOKENS} exclude={outSym} />
+          <TokenSelect value={inSym} onChange={setInSym} tokens={chain.tokens} exclude={outSym} />
           <span className="c-arrow">→</span>
-          <TokenSelect value={outSym} onChange={setOutSym} tokens={TOKENS} exclude={inSym} />
+          <TokenSelect value={outSym} onChange={setOutSym} tokens={chain.tokens} exclude={inSym} />
         </div>
         <div className="c-controls" style={{ marginTop: 12 }}>
           <span className="c-ctl-label">Slippage</span>
@@ -247,7 +247,7 @@ export function ToolsView() {
                   <p>{data.recommendation.reason}.</p>
                   <p>
                     Measured from{' '}
-                    <a href={`${EXPLORER}/address/${data.drift.pool}`} target="_blank" rel="noreferrer" className="mono">
+                    <a href={`${chain.explorer}/address/${data.drift.pool}`} target="_blank" rel="noreferrer" className="mono">
                       {addr(data.drift.pool)}
                     </a>
                     . Uniswap V3 Swap events carry the pool price, so a single log query

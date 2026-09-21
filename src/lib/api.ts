@@ -7,7 +7,7 @@
  * and no display code ever sees a float.
  */
 
-import type { Token } from './chain';
+import type { ChainKey, Token } from './chain';
 import type { Venue, Rung } from './quote';
 
 export type ApiAllocation = { venue: Venue; amountIn: bigint; amountOut: bigint; share: number };
@@ -72,12 +72,13 @@ function revive(v: unknown, key?: string): unknown {
 }
 
 export async function fetchQuote(
+  chain: ChainKey,
   inSym: string,
   outSym: string,
   amount: string,
   signal?: AbortSignal,
 ): Promise<QuoteResponse> {
-  const url = `/api/quote?in=${encodeURIComponent(inSym)}&out=${encodeURIComponent(outSym)}&amount=${encodeURIComponent(amount)}`;
+  const url = `/api/quote?chain=${chain}&in=${encodeURIComponent(inSym)}&out=${encodeURIComponent(outSym)}&amount=${encodeURIComponent(amount)}`;
   const res = await fetch(url, { signal, cache: 'no-store' });
   const body = await res.json();
   if (!res.ok) throw new Error(body?.error ?? `quote failed (${res.status})`);

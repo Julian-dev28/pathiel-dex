@@ -1,8 +1,8 @@
 /**
- * GET /api/stream?in=WETH&out=USDC&amount=1
+ * GET /api/stream?chain=robinhood&in=WETH&out=USDG&amount=1
  *
- * Server-sent events: a re-quote pushed every time Base produces a block that
- * actually changes the answer.
+ * Server-sent events: a re-quote pushed every time the chain produces a block
+ * that actually changes the answer.
  *
  * SSE rather than WebSockets because the traffic is one-directional — the
  * client has nothing to say back — and SSE reconnects on its own, travels over
@@ -11,7 +11,8 @@
  *
  * Two things make this survivable rather than a load generator:
  *
- *   Blocks are *coalesced*. Base produces a block every two seconds; quoting
+ *   Blocks are *coalesced*. Base produces a block every two seconds and
+ *   Robinhood Chain ten a second; quoting
  *   every one of them for every open connection would be several RPC calls per
  *   second per viewer. Instead the stream re-quotes at most once per interval
  *   and skips entirely when nothing moved.
@@ -20,7 +21,7 @@
  *   same number, and pushing it wakes the client's render loop for nothing.
  */
 
-import { bySymbol } from '@/lib/chain';
+import { bySymbol, chainByKey } from '@/lib/chain';
 import { client, quoteLadder, ladder, bestRoute } from '@/lib/quote';
 import { hopCostInToken } from '@/lib/gas';
 import { toBase, jsonSafe } from '@/lib/format';
@@ -42,14 +43,20 @@ export async function GET(req: Request) {
   }
 
   const url = new URL(req.url);
-  const inSym = url.searchParams.get('in') ?? 'WETH';
-  const outSym = url.searchParams.get('out') ?? 'USDC';
+  let chain;
+  try {
+    chain = chainByKey(url.searchParams.get('chain'));
+  } catch {
+    return new Response('unknown chain', { status: 400 });
+  }
+  const inSym = url.searchParams.get('in') ?? chain.weth.symbol;
+  const outSym = url.searchParams.get('out') ?? chain.usd.symbol;
   const amountStr = url.searchParams.get('amount') ?? '1';
 
   let tokenIn, tokenOut, amountIn: bigint;
   try {
-    tokenIn = bySymbol(inSym);
-    tokenOut = bySymbol(outSym);
+    tokenIn = bySymbol(inSym, chain);
+    tokenOut = bySymbol(outSym, chain);
     amountIn = toBase(amountStr, tokenIn);
     if (amountIn <= 0n || tokenIn.address === tokenOut.address) {
       return new Response('bad pair or amount', { status: 400 });
@@ -127,8 +134,12 @@ export async function GET(req: Request) {
 
       let unwatch = () => {};
       try {
-        unwatch = client().watchBlockNumber({
+        unwatch = client(chain).watchBlockNumber({
           emitOnBegin: true,
+          // Polling faster than the re-quote interval buys nothing. Left to
+          // the default, viem polls Robinhood Chain's 100ms blocks twice a
+          // second per open stream.
+          pollingInterval: MIN_INTERVAL_MS / 3,
           onBlockNumber: async (blockNumber) => {
             if (closed) return;
             if (Date.now() - started > MAX_DURATION_MS) {

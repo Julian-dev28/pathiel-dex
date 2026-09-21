@@ -72,3 +72,24 @@ export const aeroRouterAbi = [
 export const v2RouterAbi = [
   'function swapExactTokensForTokens(uint256 amountIn, uint256 amountOutMin, address[] path, address to, uint256 deadline) returns (uint256[] amounts)',
 ] as const;
+
+// Uniswap V4's quoter, like V3's, quotes by executing the swap and reverting,
+// so it batches through Multicall3 like a view. Amounts are uint128.
+export const v4QuoterAbi = [
+  'function quoteExactInputSingle(((address currency0, address currency1, uint24 fee, int24 tickSpacing, address hooks) poolKey, bool zeroForOne, uint128 exactAmount, bytes hookData) params) returns (uint256 amountOut, uint256 gasEstimate)',
+  'function quoteExactInput((address exactCurrency, (address intermediateCurrency, uint24 fee, int24 tickSpacing, address hooks, bytes hookData)[] path, uint128 exactAmount) params) returns (uint256 amountOut, uint256 gasEstimate)',
+] as const;
+
+// V4 swaps go through the Universal Router: a list of one-byte commands, each
+// with its own ABI-encoded input. See execute.ts for the commands used.
+export const universalRouterAbi = [
+  'function execute(bytes commands, bytes[] inputs, uint256 deadline) payable',
+] as const;
+
+// The Universal Router pulls tokens through Permit2, not through an ERC-20
+// allowance of its own: the token approves Permit2, and Permit2 holds a
+// separate, expiring allowance for the router.
+export const permit2Abi = [
+  'function approve(address token, address spender, uint160 amount, uint48 expiration)',
+  'function allowance(address owner, address token, address spender) view returns (uint160 amount, uint48 expiration, uint48 nonce)',
+] as const;

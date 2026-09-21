@@ -1,7 +1,6 @@
 'use client';
 
 import { WagmiProvider, createConfig, http } from 'wagmi';
-import { base } from 'wagmi/chains';
 // From @wagmi/core rather than wagmi/connectors: that barrel re-exports every
 // connector, including Coinbase's, which drags in @base-org/account and a
 // half-installed x402 dependency tree that fails the build. We want one
@@ -9,7 +8,8 @@ import { base } from 'wagmi/chains';
 import { injected } from '@wagmi/core';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import { RPC_URLS } from '@/lib/chain';
+import { CHAINS } from '@/lib/chain';
+import { ChainProvider } from '@/components/ChainProvider';
 
 /**
  * Injected connectors only — MetaMask, Rabby, Coinbase Wallet, Brave.
@@ -20,9 +20,12 @@ import { RPC_URLS } from '@/lib/chain';
  * it depends on nothing but public RPC, that trade is not worth one connector.
  */
 export const wagmiConfig = createConfig({
-  chains: [base],
+  chains: [CHAINS.robinhood.viem, CHAINS.base.viem],
   connectors: [injected()],
-  transports: { [base.id]: http(RPC_URLS[0]) },
+  transports: {
+    [CHAINS.robinhood.id]: http(CHAINS.robinhood.rpcUrls[0]),
+    [CHAINS.base.id]: http(CHAINS.base.rpcUrls[0]),
+  },
   ssr: true,
 });
 
@@ -54,7 +57,9 @@ export function Providers({ children }: { children: React.ReactNode }) {
 
   return (
     <WagmiProvider config={wagmiConfig}>
-      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      <QueryClientProvider client={queryClient}>
+        <ChainProvider>{children}</ChainProvider>
+      </QueryClientProvider>
     </WagmiProvider>
   );
 }

@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useChain } from './ChainProvider';
 import { Card, Answer, Answers, Reveal, Chip, Empty, ErrorNote, Loading } from './ui';
 
 type Edge = {
@@ -49,12 +50,14 @@ export function CycleRoute() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [started, setStarted] = useState(false);
+  const { chain } = useChain();
 
   useEffect(() => {
     if (!started) return;
     let cancelled = false;
     setLoading(true);
-    fetch('/api/cycles', { cache: 'no-store' })
+    setData(null);
+    fetch(`/api/cycles?chain=${chain.key}`, { cache: 'no-store' })
       .then((r) => r.json())
       .then((b) => {
         if (cancelled) return;
@@ -69,7 +72,7 @@ export function CycleRoute() {
     return () => {
       cancelled = true;
     };
-  }, [started]);
+  }, [started, chain.key]);
 
   const best = data?.triangles?.[0] ?? null;
 
@@ -91,7 +94,8 @@ export function CycleRoute() {
         <>
           <p className="c-empty" style={{ marginBottom: 12 }}>
             Searches every loop of tokens for one that returns more than it started with —
-            WETH → USDC → cbBTC → WETH and so on. Costs about twenty live quotes.
+            {chain.weth.symbol} → {chain.usd.symbol} → cbBTC → {chain.weth.symbol} and so on, on{' '}
+            {chain.name}. Costs about twenty live quotes.
           </p>
           <button className="c-suggest-btn" type="button" onClick={() => setStarted(true)}>
             Scan the market

@@ -36,16 +36,15 @@ import {
   type Address,
   type PublicClient,
 } from 'viem';
-import { base } from 'viem/chains';
 import {
-  RPC_URLS,
+  CHAINS,
+  DEFAULT_CHAIN,
   MULTICALL3,
-  V3_DEPLOYMENTS,
-  V2_VENUES,
-  AERO_FACTORY,
-  AERO_ROUTER,
-  INTERMEDIATES,
+  chainOf,
+  rpcUrlsFor,
+  type ChainConfig,
   type Token,
+  type V4PoolKey,
 } from './chain';
 import {
   multicall3Abi,
@@ -54,6 +53,7 @@ import {
   aeroFactoryAbi,
   aeroRouterAbi,
   quoterV2Abi,
+  v4QuoterAbi,
 } from './abis';
 
 const MC3 = parseAbi(multicall3Abi);
@@ -62,18 +62,32 @@ const V2P = parseAbi(v2PairAbi);
 const AEROF = parseAbi(aeroFactoryAbi);
 const AEROR = parseAbi(aeroRouterAbi);
 const QUOTER = parseAbi(quoterV2Abi);
+const V4Q = parseAbi(v4QuoterAbi);
 
 const ZERO = '0x0000000000000000000000000000000000000000';
 
 /** How many contract-quoted venues survive pruning and get a full ladder. */
 const LADDER_WIDTH = 6;
 
+/**
+ * A route the quoter says costs more gas than this is dropped.
+ *
+ * A pool with liquidity in only a narrow band quotes by walking every empty
+ * tick down to the price limit: on Robinhood Chain, 1,000 USDG into the 0.01%
+ * NVDA pool quoted dust for 32.5M gas, more than a block holds. Such a route
+ * can never execute, so it is not a route.
+ */
+const MAX_ROUTE_GAS = 3_000_000n;
+
 export type Hop =
-  /** `dex` indexes V3_DEPLOYMENTS: Uniswap V3 and its forks share a quoter ABI
-   *  but not a router ABI, so the deployment travels with the hop. */
+  /** `dex` indexes the chain's `v3` table: Uniswap V3 and its forks share a
+   *  quoter ABI but not a router ABI, so the deployment travels with the hop. */
   | { family: 'v3'; fee: number; dex: number }
   | { family: 'v2'; pool: Address; feeBps: number }
-  | { family: 'aero'; pool: Address; stable: boolean };
+  | { family: 'aero'; pool: Address; stable: boolean }
+  /** `key.currency0`/`currency1` may be native ETH (0x0) where the path says
+   *  WETH; execution wraps and unwraps at the ends. */
+  | { family: 'v4'; key: V4PoolKey; zeroForOne: boolean };
 
 /**
  * A route through one protocol family. `path` is the token sequence including
@@ -82,35 +96,42 @@ export type Hop =
 export type Venue = {
   id: string;
   label: string;
-  family: 'v3' | 'v2' | 'aero';
+  family: 'v3' | 'v2' | 'aero' | 'v4';
   path: Token[];
   hops: Hop[];
-  /** Set for the v2 family: which fork's router executes this route. */
+  /** Which router executes this route. Unset only for Aerodrome, which has one. */
   router?: Address;
 };
+
+/** The chain a route runs on: the chain its tokens live on. */
+export const chainOfVenue = (v: Venue): ChainConfig => chainOf(v.path[0]);
 
 export const isMultiHop = (v: Venue): boolean => v.hops.length > 1;
 
 export type Call = { target: Address; allowFailure: boolean; callData: `0x${string}` };
 
-let cached: PublicClient | null = null;
+const clients = new Map<number, PublicClient>();
 
 /**
  * Public RPC endpoints rate-limit and occasionally return stale state, so the
  * transport is a fallback chain rather than one URL. `batch` lets viem coalesce
  * concurrent eth_calls into a single JSON-RPC array.
+ *
+ * A private endpoint, when configured, goes in front; see `rpcUrlsFor`.
  */
-export function client(): PublicClient {
-  if (!cached) {
-    const urls = process.env.RPC_URL ? [process.env.RPC_URL, ...RPC_URLS] : [...RPC_URLS];
-    cached = createPublicClient({
-      chain: base,
+export function client(chain: ChainConfig = CHAINS[DEFAULT_CHAIN]): PublicClient {
+  let c = clients.get(chain.id);
+  if (!c) {
+    const urls = rpcUrlsFor(chain);
+    c = createPublicClient({
+      chain: chain.viem,
       transport: fallback(
         urls.map((url) => http(url, { batch: true, retryCount: 2, timeout: 12_000 })),
       ),
     }) as PublicClient;
+    clients.set(chain.id, c);
   }
-  return cached;
+  return c;
 }
 
 /**
@@ -127,11 +148,12 @@ export function client(): PublicClient {
  * replayed against a fork two blocks later is comparing two different markets.
  */
 async function batch(
+  chain: ChainConfig,
   calls: Call[],
   blockNumber?: bigint,
 ): Promise<readonly { success: boolean; returnData: `0x${string}` }[]> {
   if (calls.length === 0) return [];
-  const c = client();
+  const c = client(chain);
 
   const CHUNK = 12;
   const chunks: Call[][] = [];
@@ -172,16 +194,48 @@ const aeroRoutes = (v: Venue) =>
     from: v.path[i].address,
     to: v.path[i + 1].address,
     stable: (h as Extract<Hop, { family: 'aero' }>).stable,
-    factory: AERO_FACTORY,
+    factory: chainOfVenue(v).aerodrome!.factory,
   }));
+
+/**
+ * A fee in hundredths of a basis point, as a percentage number: two places for
+ * the standard tiers, as many as it takes for V4's free-form fees.
+ */
+const feeNum = (fee: number): string =>
+  fee % 100 === 0 ? (fee / 10_000).toFixed(2) : String(Number((fee / 10_000).toFixed(4)));
+
+/**
+ * The currency a V4 pool uses for `t`: native ETH where the pool holds ETH and
+ * the path says WETH, otherwise the token itself. Null when the pool does not
+ * trade `t` at all.
+ */
+export function v4Currency(chain: ChainConfig, key: V4PoolKey, t: Token): Address | null {
+  const isWeth = t.address.toLowerCase() === chain.weth.address.toLowerCase();
+  for (const c of [key.currency0, key.currency1]) {
+    if (c.toLowerCase() === t.address.toLowerCase()) return c;
+    if (isWeth && c === ZERO) return ZERO;
+  }
+  return null;
+}
+
+/** Every listed V4 pool that trades `a` against `b`, with the currencies it uses for each. */
+function v4PoolsFor(chain: ChainConfig, a: Token, b: Token) {
+  const out: { key: V4PoolKey; ca: Address; cb: Address }[] = [];
+  for (const key of chain.v4?.pools ?? []) {
+    const ca = v4Currency(chain, key, a);
+    const cb = v4Currency(chain, key, b);
+    if (ca !== null && cb !== null && ca !== cb) out.push({ key, ca, cb });
+  }
+  return out;
+}
 
 /**
  * Enumerate every route worth quoting: direct pools, plus two-hop routes
  * through a small set of liquid intermediates.
  *
- * Intermediates are WETH and USDC because on Base essentially all liquidity is
- * paired against one of them; a long-tail token with neither has no route worth
- * finding. The candidate set is deliberately wide and pruned later by price,
+ * Intermediates are the chain's hubs — WETH and USDC on Base, WETH and USDG on
+ * Robinhood Chain — because essentially all liquidity is paired against one of
+ * them; a long-tail token with neither has no route worth finding. The candidate set is deliberately wide and pruned later by price,
  * which is cheaper and more honest than guessing in advance which venue is deep.
  *
  * Uniswap V3 needs no discovery calls: its quoter takes a fee tier directly and
@@ -192,7 +246,8 @@ export async function discover(
   tokenOut: Token,
   blockNumber?: bigint,
 ): Promise<Venue[]> {
-  const mids = INTERMEDIATES.filter(
+  const chain = chainOf(tokenIn);
+  const mids = chain.intermediates.filter(
     (m) =>
       m.address.toLowerCase() !== tokenIn.address.toLowerCase() &&
       m.address.toLowerCase() !== tokenOut.address.toLowerCase(),
@@ -202,24 +257,28 @@ export async function discover(
   type Probe = { kind: 'v2'; forkIndex: number; a: Token; b: Token } | { kind: 'aero'; stable: boolean; a: Token; b: Token };
   const probes: Probe[] = [];
 
-  V2_VENUES.forEach((_, forkIndex) => {
+  chain.v2.forEach((_, forkIndex) => {
     probes.push({ kind: 'v2', forkIndex, a: tokenIn, b: tokenOut });
     for (const m of mids) {
       probes.push({ kind: 'v2', forkIndex, a: tokenIn, b: m });
       probes.push({ kind: 'v2', forkIndex, a: m, b: tokenOut });
     }
   });
-  for (const stable of [true, false]) {
-    probes.push({ kind: 'aero', stable, a: tokenIn, b: tokenOut });
-    for (const m of mids) {
-      probes.push({ kind: 'aero', stable, a: tokenIn, b: m });
-      probes.push({ kind: 'aero', stable, a: m, b: tokenOut });
+  const aero = chain.aerodrome;
+  if (aero) {
+    for (const stable of [true, false]) {
+      probes.push({ kind: 'aero', stable, a: tokenIn, b: tokenOut });
+      for (const m of mids) {
+        probes.push({ kind: 'aero', stable, a: tokenIn, b: m });
+        probes.push({ kind: 'aero', stable, a: m, b: tokenOut });
+      }
     }
   }
 
   const res = await batch(
+    chain,
     probes.map((p) => ({
-      target: p.kind === 'v2' ? V2_VENUES[p.forkIndex].factory : AERO_FACTORY,
+      target: p.kind === 'v2' ? chain.v2[p.forkIndex].factory : aero!.factory,
       allowFailure: true,
       callData:
         p.kind === 'v2'
@@ -258,7 +317,7 @@ export async function discover(
   const venues: Venue[] = [];
 
   // ── V2 forks ──────────────────────────────────────────────────────────
-  V2_VENUES.forEach((fork, forkIndex) => {
+  chain.v2.forEach((fork, forkIndex) => {
     const direct = pools.get(`v2:${forkIndex}:${tokenIn.symbol}:${tokenOut.symbol}`);
     if (direct) {
       venues.push({
@@ -329,7 +388,7 @@ export async function discover(
   //
   // No discovery calls: these quoters take a fee tier directly and revert when
   // the pool is absent, so dead tiers prune themselves at quote time.
-  V3_DEPLOYMENTS.forEach((dep, dex) => {
+  chain.v3.forEach((dep, dex) => {
     for (const fee of dep.feeTiers) {
       venues.push({
         id: `v3:${dex}:${fee}`,
@@ -340,8 +399,8 @@ export async function discover(
         router: dep.router,
       });
     }
-    // Multi-hop is restricted to the tiers that hold real liquidity on Base.
-    // All tiers squared would be sixteen candidates per intermediate per
+    // Multi-hop is restricted to the tiers that hold real liquidity on the
+    // chain. All tiers squared would be sixteen candidates per intermediate per
     // deployment, most of them empty pools, and pruning each costs a call.
     for (const m of mids) {
       for (const f1 of dep.multiHopTiers) {
@@ -361,6 +420,50 @@ export async function discover(
       }
     }
   });
+
+  // ── Uniswap V4 ────────────────────────────────────────────────────────
+  //
+  // Candidates come from the committed pool registry, not from calls: V4 has
+  // no factory to ask. As with V3, a pool that has drained since the registry
+  // was built fails its quote and prunes itself.
+  const v4 = chain.v4;
+  if (v4) {
+    const v4Venue = (path: Token[], hops: Extract<Hop, { family: 'v4' }>[]): Venue => ({
+      id: `v4:${hops.map((h) => `${h.key.currency0}-${h.key.currency1}-${h.key.fee}-${h.key.tickSpacing}`).join(':')}`,
+      label:
+        hops.length === 1
+          ? `${v4.name} ${feeNum(hops[0].key.fee)}%`
+          : `${v4.name} ${hops.map((h) => feeNum(h.key.fee)).join('/')}% via ${path[1].symbol}`,
+      family: 'v4',
+      path,
+      hops,
+      router: v4.universalRouter,
+    });
+
+    for (const p of v4PoolsFor(chain, tokenIn, tokenOut)) {
+      venues.push(
+        v4Venue([tokenIn, tokenOut], [
+          { family: 'v4', key: p.key, zeroForOne: p.ca.toLowerCase() === p.key.currency0.toLowerCase() },
+        ]),
+      );
+    }
+    for (const m of mids) {
+      for (const a of v4PoolsFor(chain, tokenIn, m)) {
+        for (const b of v4PoolsFor(chain, m, tokenOut)) {
+          // One path hands the intermediate from the first pool to the second
+          // inside the PoolManager, so both must use the same currency for it.
+          // An ETH pool followed by a WETH pool would need a wrap mid-route.
+          if (a.cb.toLowerCase() !== b.ca.toLowerCase()) continue;
+          venues.push(
+            v4Venue([tokenIn, m, tokenOut], [
+              { family: 'v4', key: a.key, zeroForOne: a.ca.toLowerCase() === a.key.currency0.toLowerCase() },
+              { family: 'v4', key: b.key, zeroForOne: b.ca.toLowerCase() === b.key.currency0.toLowerCase() },
+            ]),
+          );
+        }
+      }
+    }
+  }
 
   return venues;
 }
@@ -437,12 +540,64 @@ export function analysisLadder(amountIn: bigint, above = 32n, rungs = 13): bigin
   return out;
 }
 
+/** The currency each point of a V4 route's path is settled in, ETH or token. */
+export function v4PathCurrencies(v: Venue): Address[] {
+  const hops = v.hops as Extract<Hop, { family: 'v4' }>[];
+  const chain = chainOfVenue(v);
+  const out: Address[] = [v4Currency(chain, hops[0].key, v.path[0])!];
+  hops.forEach((h, i) => out.push(v4Currency(chain, h.key, v.path[i + 1])!));
+  return out;
+}
+
+/** V4 multi-hop path: every currency after the first, with the pool that reaches it. */
+export function v4PathKeys(v: Venue) {
+  const hops = v.hops as Extract<Hop, { family: 'v4' }>[];
+  const currencies = v4PathCurrencies(v);
+  return hops.map((h, i) => ({
+    intermediateCurrency: currencies[i + 1],
+    fee: h.key.fee,
+    tickSpacing: h.key.tickSpacing,
+    hooks: h.key.hooks,
+    hookData: '0x' as `0x${string}`,
+  }));
+}
+
 /** Build the contract call that quotes one venue at one size. */
 function quoteCall(v: Venue, size: bigint): Call | null {
+  const chain = chainOfVenue(v);
+
+  if (v.family === 'v4') {
+    const hops = v.hops as Extract<Hop, { family: 'v4' }>[];
+    const quoter = chain.v4!.quoter;
+    // The V4 quoter takes a uint128. A size past that is not a trade anyone
+    // can make, and encoding it would throw rather than return a dead quote.
+    if (size >= 1n << 128n) return null;
+    if (hops.length === 1) {
+      return {
+        target: quoter,
+        allowFailure: true,
+        callData: encodeFunctionData({
+          abi: V4Q,
+          functionName: 'quoteExactInputSingle',
+          args: [{ poolKey: hops[0].key, zeroForOne: hops[0].zeroForOne, exactAmount: size, hookData: '0x' }],
+        }),
+      };
+    }
+    return {
+      target: quoter,
+      allowFailure: true,
+      callData: encodeFunctionData({
+        abi: V4Q,
+        functionName: 'quoteExactInput',
+        args: [{ exactCurrency: v4PathCurrencies(v)[0], path: v4PathKeys(v), exactAmount: size }],
+      }),
+    };
+  }
+
   if (v.family === 'v3') {
     const v3hops = v.hops as Extract<Hop, { family: 'v3' }>[];
     const fees = v3hops.map((h) => h.fee);
-    const quoter = V3_DEPLOYMENTS[v3hops[0].dex].quoter;
+    const quoter = chain.v3[v3hops[0].dex].quoter;
     if (v.hops.length === 1) {
       return {
         target: quoter,
@@ -478,7 +633,7 @@ function quoteCall(v: Venue, size: bigint): Call | null {
     // curve, and chains hops for us. Reimplementing a Solidly invariant
     // off-chain to save one call is how you ship a number that is subtly wrong.
     return {
-      target: AERO_ROUTER,
+      target: chain.aerodrome!.router,
       allowFailure: true,
       callData: encodeFunctionData({
         abi: AEROR,
@@ -494,6 +649,14 @@ function quoteCall(v: Venue, size: bigint): Call | null {
 /** Decode whatever `quoteCall` asked for. Returns 0n when the route is dead. */
 function decodeQuote(v: Venue, data: `0x${string}`): { amountOut: bigint; gas?: bigint } {
   try {
+    if (v.family === 'v4') {
+      const [amountOut, gas] = decodeFunctionResult({
+        abi: V4Q,
+        functionName: v.hops.length === 1 ? 'quoteExactInputSingle' : 'quoteExactInput',
+        data,
+      }) as unknown as [bigint, bigint];
+      return { amountOut, gas };
+    }
     if (v.family === 'v3') {
       if (v.hops.length === 1) {
         const d = decodeFunctionResult({
@@ -535,7 +698,9 @@ async function v2States(
   }
   const poolList = [...poolSet.keys()];
 
+  if (poolList.length === 0) return new Map();
   const res = await batch(
+    chainOfVenue(v2[0]),
     poolList.flatMap((pool) => [
       { target: pool, allowFailure: true, callData: encodeFunctionData({ abi: V2P, functionName: 'getReserves' }) },
       { target: pool, allowFailure: true, callData: encodeFunctionData({ abi: V2P, functionName: 'token0' }) },
@@ -591,7 +756,8 @@ async function v2States(
 /** Gas for a route: measured per family, scaled by hop count. */
 function gasFor(v: Venue, quoted?: bigint): bigint {
   if (quoted && quoted > 0n) return quoted;
-  const perHop = v.family === 'aero' ? 181_000n : v.family === 'v2' ? 102_000n : 130_000n;
+  const perHop =
+    v.family === 'aero' ? 181_000n : v.family === 'v2' ? 102_000n : v.family === 'v4' ? 120_000n : 130_000n;
   // A second hop reuses the transaction's warm state, so it costs less than the
   // first. Measured in contracts/test/GasProfile.t.sol.
   return perHop + BigInt(v.hops.length - 1) * 70_000n;
@@ -634,9 +800,11 @@ export async function quoteLadder(
   // rather than taking one each. With discovery and the ladder that is three
   // sequential network stages for a quote, not four — worth about a second on
   // a long-tail pair, where the candidate set is widest.
+  const chain = chainOf(tokenIn);
   const [states, probeRes] = await Promise.all([
     v2States(vs, blockNumber),
     batch(
+      chain,
       probeCalls.map((p) => p.call),
       blockNumber,
     ),
@@ -649,6 +817,7 @@ export async function quoteLadder(
     if (!r?.success || r.returnData === '0x') return;
     const { amountOut, gas } = decodeQuote(p.venue, r.returnData);
     if (amountOut <= 0n) return;
+    if (gas !== undefined && gas > MAX_ROUTE_GAS) return;
     probed.push({ venue: p.venue, amountOut, gas });
   });
   probed.sort((a, b) => (a.amountOut > b.amountOut ? -1 : 1));
@@ -676,6 +845,7 @@ export async function quoteLadder(
     }
   }
   const rungRes = await batch(
+    chain,
     rungCalls.map((r) => r.call),
     blockNumber,
   );

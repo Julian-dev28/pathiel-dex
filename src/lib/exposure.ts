@@ -26,21 +26,28 @@
 
 import { parseAbiItem, type Address } from 'viem';
 import { client } from './quote';
-import type { Token } from './chain';
+import type { ChainConfig, Token } from './chain';
 
 const V3_SWAP = parseAbiItem(
   'event Swap(address indexed sender, address indexed recipient, int256 amount0, int256 amount1, uint160 sqrtPriceX96, uint128 liquidity, int24 tick)',
 );
 
 /**
- * Blocks a transaction realistically waits before inclusion on Base.
+ * How long a transaction realistically waits before inclusion.
  *
- * Base produces a block every two seconds, so six blocks is roughly twelve
- * seconds — long enough to cover a wallet's signing prompt and the sequencer
- * accepting the transaction. Slippage has to survive this window, and nothing
- * longer: a tolerance sized for a minute of drift is a minute of bounty.
+ * Twelve seconds — long enough to cover a wallet's signing prompt and the
+ * sequencer accepting the transaction. Slippage has to survive this window,
+ * and nothing longer: a tolerance sized for a minute of drift is a minute of
+ * bounty.
+ *
+ * It is a time, not a block count, because the chains disagree by twenty
+ * times on what a block is: six blocks on Base, a hundred and twenty on
+ * Robinhood Chain.
  */
-export const INCLUSION_BLOCKS = 6n;
+const INCLUSION_MS = 12_000;
+
+export const inclusionBlocks = (chain: ChainConfig): bigint =>
+  BigInt(Math.ceil(INCLUSION_MS / chain.blockMs));
 
 export type Drift = {
   pool: Address;
@@ -79,18 +86,19 @@ const percentile = (sorted: number[], p: number): number =>
  * window is that the estimate reaches further into the past — acceptable for a
  * pool that trades rarely, since that past is the only evidence there is.
  */
-const LOOKBACKS = [600n, 2_400n] as const;
+const LOOKBACK_MS = [20 * 60_000, 80 * 60_000] as const;
 
-export async function measureDriftEscalating(pool: Address): Promise<Drift | null> {
-  for (const lookback of LOOKBACKS) {
-    const d = await measureDrift(pool, lookback);
+export async function measureDriftEscalating(pool: Address, chain: ChainConfig): Promise<Drift | null> {
+  for (const ms of LOOKBACK_MS) {
+    const d = await measureDrift(pool, chain, BigInt(Math.ceil(ms / chain.blockMs)));
     if (d) return d;
   }
   return null;
 }
 
-export async function measureDrift(pool: Address, lookback = 600n): Promise<Drift | null> {
-  const c = client();
+export async function measureDrift(pool: Address, chain: ChainConfig, lookback: bigint): Promise<Drift | null> {
+  const c = client(chain);
+  const window = inclusionBlocks(chain);
   const head = await c.getBlockNumber();
   const fromBlock = head - lookback;
 
@@ -118,10 +126,10 @@ export async function measureDrift(pool: Address, lookback = 600n): Promise<Drif
 
   for (let i = 0; i < blocks.length; i++) {
     const start = blocks[i];
-    // The first observation at least `INCLUSION_BLOCKS` later. Pools trade
+    // The first observation at least an inclusion window later. Pools trade
     // irregularly, so this is "the next price after the window" rather than an
     // exact horizon — which is the price a trader would actually have faced.
-    const end = blocks.find((b) => b >= start + INCLUSION_BLOCKS);
+    const end = blocks.find((b) => b >= start + window);
     if (end === undefined) break;
     const a = byBlock.get(start)!;
     const b = byBlock.get(end)!;

@@ -1,5 +1,5 @@
 /**
- * GET /api/venues?in=WETH&out=USDC
+ * GET /api/venues?chain=robinhood&in=WETH&out=USDG
  *
  * The pool inventory behind a pair: every distinct pool the router would
  * consider, including the ones sitting in the middle of a two-hop route, and
@@ -10,11 +10,15 @@
  * function, and a Solidly stable pool's reserves are not comparable to a
  * constant-product pool's. Token balances are the one measure that means the
  * same thing at every venue: this is the stock a trade can consume.
+ *
+ * Uniswap V4 pools are the exception and are left out: they hold no balance of
+ * their own. Every V4 pool's tokens sit together in one PoolManager contract,
+ * so a balance read there is the whole chain's V4 inventory, not the pool's.
  */
 
 import { NextResponse } from 'next/server';
 import { encodeFunctionData, decodeFunctionResult, parseAbi, type Address } from 'viem';
-import { bySymbol, UNIV3_FACTORY, MULTICALL3, type Token } from '@/lib/chain';
+import { bySymbol, chainByKey, MULTICALL3, type ChainConfig, type Token } from '@/lib/chain';
 import { client, discover, type Venue, type Hop } from '@/lib/quote';
 import { erc20Abi, univ3FactoryAbi, multicall3Abi } from '@/lib/abis';
 import { jsonSafe } from '@/lib/format';
@@ -31,13 +35,14 @@ const ZERO = '0x0000000000000000000000000000000000000000';
 type Aggregate = readonly { success: boolean; returnData: `0x${string}` }[];
 
 async function aggregate(
+  chain: ChainConfig,
   calls: { target: Address; allowFailure: boolean; callData: `0x${string}` }[],
 ): Promise<Aggregate> {
   if (calls.length === 0) return [];
   const out: Aggregate[] = [];
   for (let i = 0; i < calls.length; i += 20) {
     out.push(
-      (await client().readContract({
+      (await client(chain).readContract({
         address: MULTICALL3,
         abi: MC3,
         functionName: 'aggregate3',
@@ -63,19 +68,20 @@ type PoolRow = {
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const inSym = url.searchParams.get('in') ?? 'WETH';
-  const outSym = url.searchParams.get('out') ?? 'USDC';
 
   try {
-    const tokenIn = bySymbol(inSym);
-    const tokenOut = bySymbol(outSym);
+    const chain = chainByKey(url.searchParams.get('chain'));
+    const inSym = url.searchParams.get('in') ?? chain.weth.symbol;
+    const outSym = url.searchParams.get('out') ?? chain.usd.symbol;
+    const tokenIn = bySymbol(inSym, chain);
+    const tokenOut = bySymbol(outSym, chain);
     if (tokenIn.address === tokenOut.address) {
       return NextResponse.json({ error: 'tokenIn and tokenOut are the same' }, { status: 400 });
     }
 
     // Pool inventory moves slowly next to price, so this caches for far longer
     // than a quote does: the page is a directory, not a ticker.
-    const { value } = await venueCache.get(`${tokenIn.symbol}:${tokenOut.symbol}`, async () => {
+    const { value } = await venueCache.get(`${chain.id}:${tokenIn.symbol}:${tokenOut.symbol}`, async () => {
       const venues = await discover(tokenIn, tokenOut);
 
       // Flatten every venue into its hops. A hop is a pool; the same pool can
@@ -88,6 +94,7 @@ export async function GET(req: Request) {
         b: Token;
         pool?: Address;
         fee?: number;
+        factory?: Address;
         multi: boolean;
       };
       const pending: Pending[] = [];
@@ -96,14 +103,17 @@ export async function GET(req: Request) {
         v.hops.forEach((h: Hop, i) => {
           const a = v.path[i];
           const b = v.path[i + 1];
+          if (h.family === 'v4') return;
           if (h.family === 'v3') {
+            const dep = chain.v3[h.dex];
             pending.push({
               family: 'v3',
-              label: `Uniswap V3 ${(h.fee / 10_000).toFixed(2)}%`,
+              label: `${dep.name} ${(h.fee / 10_000).toFixed(2)}%`,
               curve: 'concentrated',
               a,
               b,
               fee: h.fee,
+              factory: dep.factory,
               multi: v.hops.length > 1,
             });
           } else if (h.family === 'v2') {
@@ -134,8 +144,9 @@ export async function GET(req: Request) {
       // Displaying a pool does, so resolve them from the factory.
       const needsAddress = pending.filter((p) => !p.pool);
       const poolRes = await aggregate(
+        chain,
         needsAddress.map((p) => ({
-          target: UNIV3_FACTORY as Address,
+          target: p.factory!,
           allowFailure: true,
           callData: encodeFunctionData({
             abi: V3F,
@@ -174,6 +185,7 @@ export async function GET(req: Request) {
       const rows = [...unique.values()];
 
       const balRes = await aggregate(
+        chain,
         rows.flatMap((r) =>
           [r.a.address, r.b.address].map((t) => ({
             target: t as Address,
@@ -214,6 +226,7 @@ export async function GET(req: Request) {
       return jsonSafe({
         tokenIn,
         tokenOut,
+        chain: chain.key,
         routesConsidered: venues.length,
         multiHopRoutes: venues.filter((v) => v.hops.length > 1).length,
         pools: out,

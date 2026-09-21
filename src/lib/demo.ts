@@ -121,7 +121,7 @@ function toBaseUnits(human: number, decimals: number): bigint {
 export function demoHoldings(seed = 0x9e3779b9): DemoHolding[] {
   const rng = seeded(seed);
   return HOLDING_PLAN.map(({ symbol, lo, hi }) => {
-    const token = bySymbol(symbol);
+    const token = bySymbol(symbol, 'base');
     const human = span(rng, lo, hi, Math.min(token.decimals, 6));
     return {
       token,
@@ -156,8 +156,8 @@ export function demoFills(seed = 0x85ebca6b): DemoFill[] {
   const rng = seeded(seed);
   let ago = 0;
   return FILL_PLAN.map(({ inSym, outSym, venue, lo, hi }) => {
-    const tIn = bySymbol(inSym);
-    const tOut = bySymbol(outSym);
+    const tIn = bySymbol(inSym, 'base');
+    const tOut = bySymbol(outSym, 'base');
     const amountIn = span(rng, lo, hi, Math.min(tIn.decimals, 4));
     const rate = (DEMO_PRICES[inSym] ?? 1) / (DEMO_PRICES[outSym] ?? 1);
     const edgeBps = span(rng, 1.2, 34, 1);

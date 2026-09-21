@@ -12,13 +12,15 @@
     "predict": "tsx scripts/predict.ts",
     "smoke": "tsx scripts/smoke.ts",
     "test": "npm run typecheck && npm run build && npm run predict && cd contracts && forge test",
-    "verify:addresses": "./scripts/verify-addresses.sh",
+    "verify:addresses": "tsx scripts/verify-addresses.ts",
     "verify:tokens": "tsx scripts/verify-tokens.ts",
     "test:unit": "vitest run",
     "test:watch": "vitest",
     "probe:venues": "tsx scripts/probe-venues.ts",
     "backtest": "tsx scripts/backtest.ts",
-    "mcp": "tsx scripts/mcp.ts"
+    "mcp": "tsx scripts/mcp.ts",
+    "scan:v4": "tsx scripts/scan-v4.ts",
+    "sim:swaps": "tsx scripts/simulate-swaps.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",
@@ -40,5 +42,5 @@
     "typescript": "^5.9.0",
     "vitest": "^5.0.0"
   },
-  "description": "On-chain route solver for Base. Quotes every venue from pool state, solves the optimal split, executes through audited routers."
+  "description": "On-chain route solver for Robinhood Chain and Base. Quotes every venue from pool state, solves the optimal split, executes through audited routers."
 }

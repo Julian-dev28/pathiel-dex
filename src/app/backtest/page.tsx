@@ -1,6 +1,6 @@
 import { aggregate } from '@/lib/dataset';
 import { EdgeHistogram } from '@/components/EdgeHistogram';
-import { bySymbol, EXPLORER } from '@/lib/chain';
+import { bySymbol, CHAINS } from '@/lib/chain';
 import { sig, bps, addr } from '@/lib/format';
 import { Card, Answer, Answers, Reveal, Chip, Empty, PageHead } from '@/components/ui';
 
@@ -149,8 +149,9 @@ export default function Page() {
             <tbody>
               {a.recent.slice(0, 25).map((s) => {
                 const [inSym, outSym] = s.pair.split('/');
-                const tIn = bySymbol(inSym);
-                const tOut = bySymbol(outSym);
+                // The dataset is Base swaps.
+                const tIn = bySymbol(inSym, 'base');
+                const tOut = bySymbol(outSym, 'base');
                 return (
                   <tr key={`${s.txHash}-${s.blockNumber}`}>
                     <td className="mono">{s.pair}</td>
@@ -161,7 +162,7 @@ export default function Page() {
                       {bps(s.edgeBps)}
                     </td>
                     <td className="mono">
-                      <a href={`${EXPLORER}/tx/${s.txHash}`} target="_blank" rel="noreferrer">
+                      <a href={`${CHAINS.base.explorer}/tx/${s.txHash}`} target="_blank" rel="noreferrer">
                         {addr(s.txHash)}
                       </a>
                     </td>

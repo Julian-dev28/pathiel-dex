@@ -3,15 +3,19 @@
  * ladder, so a wrong fee constant or an inverted reserve shows up as a number
  * that is obviously not the ETH price rather than as a silent 3bp drift.
  */
-import { bySymbol } from '../src/lib/chain';
+import { bySymbol, chainByKey } from '../src/lib/chain';
 import { quoteLadder, ladder, bestRoute, interpolate } from '../src/lib/quote';
 import { hopCostInToken } from '../src/lib/gas';
 import { sig, bps } from '../src/lib/format';
 
-const [, , inSym = 'WETH', outSym = 'USDC', amt = '10'] = process.argv;
+// npm run smoke -- [in] [out] [amount] [chain]   (chain: robinhood | base)
+const [, , inArg, outArg, amt = '10', chainArg] = process.argv;
+const chain = chainByKey(chainArg);
+const inSym = inArg ?? chain.weth.symbol;
+const outSym = outArg ?? chain.usd.symbol;
 
-const tokenIn = bySymbol(inSym);
-const tokenOut = bySymbol(outSym);
+const tokenIn = bySymbol(inSym, chain);
+const tokenOut = bySymbol(outSym, chain);
 const amountIn = BigInt(Math.round(Number(amt) * 10 ** tokenIn.decimals));
 
 const t0 = Date.now();
@@ -19,7 +23,7 @@ const sizes = ladder(amountIn);
 const curves = await quoteLadder(tokenIn, tokenOut, sizes);
 const elapsed = Date.now() - t0;
 
-console.log(`\n${amt} ${inSym} -> ${outSym}   (${elapsed}ms, ${curves.length} venues live)\n`);
+console.log(`\n${amt} ${inSym} -> ${outSym} on ${chain.name}   (${elapsed}ms, ${curves.length} venues live)\n`);
 
 for (const c of curves) {
   const out = interpolate(c, amountIn);

@@ -1,5 +1,7 @@
 /**
- * GET /api/quote?in=WETH&out=USDC&amount=1.5
+ * GET /api/quote?chain=robinhood&in=WETH&out=USDG&amount=1.5
+ *
+ * `chain` is `robinhood` (the default) or `base`.
  *
  * Runs the ladder, picks the route, prices the gas, and returns the whole
  * working — every venue's curve, not just the winner. A quote you cannot audit
@@ -12,7 +14,7 @@
  */
 
 import { NextResponse } from 'next/server';
-import { bySymbol, TOKENS } from '@/lib/chain';
+import { bySymbol, chainByKey } from '@/lib/chain';
 import { toBase, jsonSafe } from '@/lib/format';
 import { quoteLimit, clientKey, QUOTE_TTL_MS } from '@/lib/serve';
 import { solveQuote } from '@/lib/solve';
@@ -42,8 +44,14 @@ export async function GET(req: Request) {
   }
 
   const url = new URL(req.url);
-  const inSym = url.searchParams.get('in') ?? 'WETH';
-  const outSym = url.searchParams.get('out') ?? 'USDC';
+  let chain;
+  try {
+    chain = chainByKey(url.searchParams.get('chain'));
+  } catch (e) {
+    return NextResponse.json({ error: (e as Error).message }, { status: 400 });
+  }
+  const inSym = url.searchParams.get('in') ?? chain.weth.symbol;
+  const outSym = url.searchParams.get('out') ?? chain.usd.symbol;
   const amountStr = (url.searchParams.get('amount') ?? '1').trim();
 
   try {
@@ -51,8 +59,8 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: 'amount is not a number' }, { status: 400 });
     }
 
-    const tokenIn = bySymbol(inSym);
-    const tokenOut = bySymbol(outSym);
+    const tokenIn = bySymbol(inSym, chain);
+    const tokenOut = bySymbol(outSym, chain);
     if (tokenIn.address === tokenOut.address) {
       return NextResponse.json({ error: 'tokenIn and tokenOut are the same' }, { status: 400 });
     }
@@ -68,7 +76,7 @@ export async function GET(req: Request) {
     if (!value) {
       metrics.inc('quote.no_liquidity');
       return NextResponse.json(
-        { error: `no liquidity found for ${inSym}/${outSym} on Base` },
+        { error: `no liquidity found for ${inSym}/${outSym} on ${chain.name}` },
         { status: 404 },
       );
     }
@@ -95,10 +103,10 @@ export async function GET(req: Request) {
   } catch (e) {
     const message = e instanceof Error ? e.message : 'quote failed';
     metrics.inc('quote.errors');
-    log.error('quote.failed', { pair: `${inSym}/${outSym}`, amount: amountStr, message });
+    log.error('quote.failed', { chain: chain.key, pair: `${inSym}/${outSym}`, amount: amountStr, message });
     // Unknown-token errors are the caller's fault, not ours, and returning 500
     // for them makes a typo look like an outage.
-    const known = TOKENS.some((t) => t.symbol === inSym) && TOKENS.some((t) => t.symbol === outSym);
+    const known = chain.tokens.some((t) => t.symbol === inSym) && chain.tokens.some((t) => t.symbol === outSym);
     return NextResponse.json({ error: message }, { status: known ? 500 : 400 });
   }
 }

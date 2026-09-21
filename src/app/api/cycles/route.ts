@@ -1,5 +1,5 @@
 /**
- * GET /api/cycles
+ * GET /api/cycles?chain=robinhood
  *
  * Arbitrage loops across the token graph: build a rate edge for every ordered
  * pair of liquid tokens, then look for a cycle whose rates multiply above one.
@@ -11,7 +11,7 @@
  */
 
 import { NextResponse } from 'next/server';
-import { bySymbol, type Token } from '@/lib/chain';
+import { bySymbol, chainByKey, type Token } from '@/lib/chain';
 import { quoteLadder, bestRoute, client } from '@/lib/quote';
 import { gasPriceWei } from '@/lib/gas';
 import { findCycle, rankTriangles, type RateEdge } from '@/lib/cycle';
@@ -21,16 +21,6 @@ import { log, metrics } from '@/lib/log';
 
 export const revalidate = 0;
 export const dynamic = 'force-dynamic';
-
-/**
- * The graph's vertices.
- *
- * Five tokens is twenty ordered pairs and ten triangles — enough to be
- * interesting, few enough to quote inside a request. Everything here has real
- * depth against both WETH and USDC, which is what makes an edge meaningful
- * rather than a wide spread nobody could trade.
- */
-const GRAPH_TOKENS = ['WETH', 'USDC', 'cbBTC', 'cbETH', 'AERO'];
 
 /** Notional each edge is quoted at, in USD. Small enough to be near mid. */
 const NOTIONAL_USD = 250;
@@ -58,13 +48,20 @@ export async function GET(req: Request) {
   metrics.inc('cycles.requests');
   if (!limit.ok) return NextResponse.json({ error: 'rate limit exceeded' }, { status: 429 });
 
+  let chain;
   try {
-    const { value, hit } = await cycleCache.get('graph', async () => {
+    chain = chainByKey(new URL(req.url).searchParams.get('chain'));
+  } catch (e) {
+    return NextResponse.json({ error: (e as Error).message }, { status: 400 });
+  }
+
+  try {
+    const { value, hit } = await cycleCache.get(`graph:${chain.id}`, async () => {
       const started = Date.now();
-      const tokens = GRAPH_TOKENS.map(bySymbol);
-      const usdc = bySymbol('USDC');
-      const gasWei = await gasPriceWei();
-      const blockNumber = await client().getBlockNumber();
+      const tokens = chain.graphTokens.map((s) => bySymbol(s, chain));
+      const usdc = chain.usd;
+      const gasWei = await gasPriceWei(chain);
+      const blockNumber = await client(chain).getBlockNumber();
 
       // Pass one: what is a unit of each token worth? Needed to quote every
       // edge at a comparable notional — an edge priced at "1 unit" would be
@@ -137,6 +134,7 @@ export async function GET(req: Request) {
       const triangles = rankTriangles(priced, edges);
 
       return {
+        chain: chain.key,
         blockNumber,
         notionalUsd: NOTIONAL_USD,
         tokens: priced.map((t) => t.symbol),

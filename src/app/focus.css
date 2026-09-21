@@ -589,3 +589,18 @@
 .c-fill-pair { width: 132px; color: var(--ink-2); }
 .c-fill-edge { color: var(--up); font-size: 12px; }
 .c-fill .mut:last-child { margin-left: auto; font-size: 12px; }
+
+/* The chain picker sits in the bar beside the wallet and dresses like it. The
+   options inherit the page's colours, not the bar's, so they stay legible in
+   the dropdown. */
+.c-chain { appearance: auto; }
+.c-chain option { color: var(--ink); background: var(--surface); }
+
+/* Route picker: the best route is preselected; the rest are Uniswap's
+   alternatives, each labelled with what it pays against the best. */
+.c-route-pick { display: flex; align-items: center; gap: 10px; margin-top: 8px; font-size: 12.5px; color: var(--ink-2); }
+.c-route-select {
+  flex: 1; min-width: 0; min-height: 34px; padding: 6px 8px;
+  font: inherit; font-size: 12.5px; color: var(--ink); background: var(--surface);
+  border: 1px solid var(--rule-2); border-radius: 5px;
+}

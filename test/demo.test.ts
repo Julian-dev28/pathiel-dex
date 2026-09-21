@@ -51,7 +51,7 @@ describe('demoHoldings', () => {
 
   it('encodes each amount at the token’s own decimals', () => {
     for (const h of demoHoldings()) {
-      const token = bySymbol(h.token.symbol);
+      const token = bySymbol(h.token.symbol, 'base');
       expect(h.token.decimals).toBe(token.decimals);
       // A bigint at the right scale: never negative, never a float that slipped
       // through, and large enough that the position is not dust.

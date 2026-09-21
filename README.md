@@ -1,8 +1,10 @@
 # PATHIEL DEX
 
-An on-chain route solver for Base. It quotes every major venue directly from
-pool state — direct pools and two-hop routes alike — solves the optimal split
-across them, and executes through the venues' own audited routers.
+An on-chain route solver for Robinhood Chain and Base. It quotes every major
+venue directly from pool state — direct pools and two-hop routes alike — solves
+the optimal split across them, and executes through the venues' own audited
+routers. Robinhood Chain is the default; pick the chain in the interface's top
+bar, or pass `chain=robinhood|base` to the API and MCP tools.
 
 There is no aggregator API anywhere in it, and no API key of any kind. Prices
 come from pool reserves and quoter contracts read over public RPC, which is what
@@ -15,6 +17,40 @@ npm run test:unit                 # solver maths, no network
 npm run predict                   # quote a set of trades, pin the block
 cd contracts && forge test        # replay them on a fork, compare
 ```
+
+## Robinhood Chain
+
+Robinhood Chain (4663) is an Arbitrum Orbit L2 with 100ms blocks, and its DEX
+liquidity looks nothing like Base's. The hub dollar is **USDG**, not USDC, and
+the tokens worth trading are Robinhood's tokenized stocks and ETFs — NVDA, QQQ,
+SPY, TSLA, GOOGL, AMZN, AAPL, MSFT, META, MSTR, PLTR, COIN — plus WETH and cbBTC.
+Two-hop routes go through WETH or USDG.
+
+| Venue | Quote | Execute |
+| --- | --- | --- |
+| Uniswap V2 | reserves, off-chain | `UniswapV2Router02` |
+| Uniswap V3 | `QuoterV2` | `SwapRouter02` |
+| PancakeSwap V3 | `QuoterV2` | `SwapRouter` (with deadline) |
+| Uniswap V4 | `V4Quoter` | `UniversalRouter` via Permit2 |
+
+**Uniswap V4 carries about half of the chain's volume**, so it is quoted and
+executed here. V4 has no factory to ask, and fee and tick spacing are free
+parameters, so its pools cannot be guessed: `npm run scan:v4` reads the
+PoolManager's `Initialize` events filtered to listed tokens and commits the
+hookless pools holding liquidity to `src/lib/v4-pools.ts`. Pools with hooks are
+excluded — a hook is arbitrary code on the swap path. Most V4 liquidity here is
+paired with native ETH, so a route that starts or ends in an ETH pool is wrapped
+or unwrapped inside the same Universal Router call; the wallet only ever holds
+WETH. V4 swaps need two exact approvals rather than one: the token to Permit2,
+then a 30-minute Permit2 allowance for the router.
+
+The Solidity fork tests cannot reach this chain: its public RPC is not an
+archive node, and at ten blocks a second a pinned fork block ages out within
+seconds. `npm run sim:swaps` runs every execution path instead — V2, V3, V3 two-
+hop, PancakeSwap, V4 with and without native ETH at either end, V4 two-hop — as
+an `eth_simulateV1` sequence at the head, and checks the fill against the quote.
+That is how the deployed router's single-hop V4 params were found to carry a
+`maxHopSlippage` word the older struct lacks.
 
 It is also an MCP server — hosted at `https://pathiel-dex.vercel.app/api/mcp`
 for quotes, and locally with your own key for trading from Claude. See [MCP](#mcp).
@@ -337,7 +373,9 @@ hundred dollars each. They would never win a route, and each one costs a
 discovery call on every quote. Measured and left out; the probe script keeps the
 evidence.
 
-**Quotable but not yet executable: Uniswap V4.** V4 is live on Base and quotes
+**Executable on Robinhood Chain, not yet on Base: Uniswap V4.** On Robinhood
+Chain V4 is quoted and executed (see [Robinhood Chain](#robinhood-chain)). On
+Base it is not configured yet. V4 is live on Base and quotes
 competitively (the hookless 0.30%/60 pool prices within a few bp of V3). It has
 no factory — a pool is identified by its key, so discovery means enumerating
 `(fee, tickSpacing, hooks)` and letting the quoter revert on the rest, which
@@ -370,7 +408,7 @@ router asks Uniswap V2, SushiSwap and BaseSwap for their pair, Aerodrome for
 both its stable and volatile pool, and lists the fee tiers of each
 concentrated-liquidity deployment — Uniswap V3 and PancakeSwap V3 — then repeats
 that through each intermediate. A V3 fork is a row in a table, not a code path. Every address in `src/lib/chain.ts` is checked
-for bytecode by `scripts/verify-addresses.sh`, and every token's `symbol()` and
+for bytecode by `npm run verify:addresses`, and every token's `symbol()` and
 `decimals()` is read from the chain by `npm run verify:tokens`. Both run in CI.
 A token entry with the right address and the wrong decimals misprices every
 trade in it by a factor of a thousand, silently.
@@ -406,11 +444,12 @@ pools it already quoted. The extra-hop cost is 70,000 gas, measured in
 
 | Suite | What it covers | Network |
 | --- | --- | --- |
-| `npm run test:unit` | 78 tests: constant-product maths, hop chaining, ladders, interpolation bounds, the splitter, gas-adjusted route choice, slippage floors, path encoding, amount parsing, capacity across decimal mismatches, exposure and slippage recommendation, and the backtest statistics | none |
+| `npm run test:unit` | 109 tests: constant-product maths, hop chaining, ladders, interpolation bounds, the splitter, gas-adjusted route choice, slippage floors, path encoding, amount parsing, capacity across decimal mismatches, exposure and slippage recommendation, and the backtest statistics | none |
 | `contracts` — `Prediction.t.sol` | Off-chain prediction vs. realised fill, 11 cases, mainnet fork | fork |
 | `contracts` — `SplitRouter.t.sol` | Atomic split execution, approval hygiene, the call-proxy exploit | fork |
 | `contracts` — `GasProfile.t.sol` | The gas constants the router makes decisions with | fork |
-| `scripts/verify-addresses.sh` | Every hardcoded address still has bytecode | RPC |
+| `npm run verify:addresses` | Every address in both chain tables still has bytecode on its chain | RPC |
+| `npm run sim:swaps` | Every execution path on Robinhood Chain, simulated at the head | RPC |
 | `npm run verify:tokens` | Every token's on-chain symbol and decimals | RPC |
 | `npm run probe:venues` | Candidate venues: liquidity, derived fees, router selectors | RPC |
 | `npm run backtest` | Replays real Base swaps against the router, appends to the dataset | RPC |
@@ -418,7 +457,8 @@ pools it already quoted. The extra-hop cost is 70,000 gas, measured in
 The fork suites share one public RPC endpoint and will fail on contention if
 run alongside a backtest — the failure looks like a broken test and is a rate
 limit. CI runs them in separate jobs for that reason. Locally, run one at a time
-or set `RPC_URL`.
+or set `RPC_URL_BASE` (plain `RPC_URL` still means Base; `RPC_URL_ROBINHOOD`
+sets Robinhood Chain's).
 
 The unit tests deliberately use no network. The fork tests prove the quoter
 agrees with the chain; the unit tests prove the arithmetic behaves at the edges
@@ -546,8 +586,11 @@ for that is a paid endpoint via `RPC_URL`, not more code.
 ## Limitations
 
 - **Two hops maximum.** Three-hop routes exist and are not searched.
-- **Intermediates are WETH and USDC.** A token paired only against something
-  else is invisible to the solver.
+- **Intermediates are WETH and the chain's dollar** (USDC on Base, USDG on
+  Robinhood Chain). A token paired only against something else is invisible to
+  the solver.
+- **Hooked V4 pools are skipped**, and the V4 pool list is a committed snapshot:
+  a pool created after the last `npm run scan:v4` is not seen until it is rerun.
 - **Execution is single-venue.** The solved split is analysis until the router
   contract is deployed.
 - **No MEV protection.** Transactions go to the public mempool. Base's sequencer
@@ -555,8 +598,12 @@ for that is a paid endpoint via `RPC_URL`, not more code.
   but that is not a guarantee and none is offered.
 - **Fee-on-transfer tokens are unsupported.** The quote assumes the amount sent
   is the amount the pool receives.
-- **Public RPC rate-limits.** Set `RPC_URL` for anything beyond casual use.
-- **Twenty-two tokens.** Majors (WETH, cbBTC, USDC, USDT, SOL, cbXRP), Base
+- **Public RPC rate-limits.** Set `RPC_URL_ROBINHOOD` / `RPC_URL_BASE` for
+  anything beyond casual use. Robinhood Chain has one public endpoint.
+- **Fifteen tokens on Robinhood Chain** (WETH, USDG, cbBTC and twelve Robinhood
+  stock and ETF tokens), taken from the Uniswap default list and limited to
+  those with a reachable pool.
+- **Twenty-two tokens on Base.** Majors (WETH, cbBTC, USDC, USDT, SOL, cbXRP), Base
   staples and long-tail tokens, and seven Coinbase tokenized stocks (NVDAc,
   AAPLc, GOOGLc, SPCXc, AMZNc, MSFTc, METAc). Adding more is a line in
   `src/lib/chain.ts`; discovery does not care, but a token is only listed once
@@ -583,7 +630,8 @@ for that is a paid endpoint via `RPC_URL`, not more code.
 
 ```
 src/lib/quote.ts        discovery, multi-hop candidates, ladder quoting, the splitter
-src/lib/chain.ts        every address, every venue, as data — V2 forks and V3 deployments
+src/lib/chain.ts        both chains' addresses, tokens and venues, as data
+src/lib/v4-pools.ts     Robinhood Chain's hookless V4 pools (generated by scripts/scan-v4.ts)
 src/lib/execute.ts      calldata for each venue's router, single and multi-hop
 src/lib/gas.ts          gas priced in the output token, no oracle
 src/lib/serve.ts        cache with coalescing, rate limit

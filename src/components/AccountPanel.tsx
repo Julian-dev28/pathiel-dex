@@ -63,7 +63,7 @@ export function AccountPanel() {
         </div>
         <p className="c-empty" style={{ marginTop: 10 }}>
           Illustrative holdings, shown because no wallet is connected. Connect one and this panel
-          is replaced by balances read from Base.
+          is replaced by balances read from the chain.
         </p>
       </Card>
 

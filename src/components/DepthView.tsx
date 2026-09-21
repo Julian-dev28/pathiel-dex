@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { TOKENS, bySymbol } from '@/lib/chain';
+import { bySymbol } from '@/lib/chain';
+import { usePair } from './ChainProvider';
 import { fetchQuote, type QuoteResponse } from '@/lib/api';
 import { sig, bps } from '@/lib/format';
 import { DepthChart } from './DepthChart';
@@ -18,27 +19,26 @@ const SERIES_CLASS = ['vc-0', 'vc-1', 'vc-2', 'vc-3', 'vc-4'];
  * per-venue detail underneath it rather than beside it.
  */
 export function DepthView() {
-  const [inSym, setInSym] = useState('WETH');
-  const [outSym, setOutSym] = useState('USDC');
+  const { chain, inSym, outSym, setInSym, setOutSym } = usePair();
   const [amount, setAmount] = useState('10');
   const [quote, setQuote] = useState<QuoteResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const tokenIn = useMemo(() => bySymbol(inSym), [inSym]);
-  const tokenOut = useMemo(() => bySymbol(outSym), [outSym]);
+  const tokenIn = useMemo(() => bySymbol(inSym, chain), [inSym, chain]);
+  const tokenOut = useMemo(() => bySymbol(outSym, chain), [outSym, chain]);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    fetchQuote(inSym, outSym, amount)
+    fetchQuote(chain.key, inSym, outSym, amount)
       .then((q) => !cancelled && (setQuote(q), setError(null)))
       .catch((e) => !cancelled && (setError(e.message), setQuote(null)))
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
-  }, [inSym, outSym, amount]);
+  }, [chain.key, inSym, outSym, amount]);
 
   /** Price impact at full size against the smallest rung, per venue. */
   const impact = useMemo(() => {
@@ -72,9 +72,9 @@ export function DepthView() {
 
       <Card title="Pair and size">
         <div className="c-controls">
-          <TokenSelect value={inSym} onChange={setInSym} tokens={TOKENS} exclude={outSym} />
+          <TokenSelect value={inSym} onChange={setInSym} tokens={chain.tokens} exclude={outSym} />
           <span className="c-arrow">→</span>
-          <TokenSelect value={outSym} onChange={setOutSym} tokens={TOKENS} exclude={inSym} />
+          <TokenSelect value={outSym} onChange={setOutSym} tokens={chain.tokens} exclude={inSym} />
           <Segmented
             label="Size"
             value={amount}

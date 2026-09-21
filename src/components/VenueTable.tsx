@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { TOKENS, EXPLORER, type Token } from '@/lib/chain';
+import type { Token } from '@/lib/chain';
+import { usePair } from './ChainProvider';
 import { sig, addr } from '@/lib/format';
 import { TokenSelect } from './TokenSelect';
 import { Card, Answer, Answers, Reveal, Chip, Empty, ErrorNote, Loading, PageHead } from './ui';
@@ -27,8 +28,7 @@ type Payload = { routesConsidered: number; multiHopRoutes: number; pools: PoolRo
  * table second. The table is the evidence, not the headline.
  */
 export function VenueTable() {
-  const [inSym, setInSym] = useState('WETH');
-  const [outSym, setOutSym] = useState('USDC');
+  const { chain, inSym, outSym, setInSym, setOutSym } = usePair();
   const [data, setData] = useState<Payload | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -36,7 +36,7 @@ export function VenueTable() {
     let cancelled = false;
     setData(null);
     setError(null);
-    fetch(`/api/venues?in=${inSym}&out=${outSym}`, { cache: 'no-store' })
+    fetch(`/api/venues?chain=${chain.key}&in=${inSym}&out=${outSym}`, { cache: 'no-store' })
       .then((r) => r.json())
       .then((body) => {
         if (cancelled) return;
@@ -58,7 +58,7 @@ export function VenueTable() {
     return () => {
       cancelled = true;
     };
-  }, [inSym, outSym]);
+  }, [chain.key, inSym, outSym]);
 
   const pools = useMemo(
     () => (data ? [...data.pools].sort((a, b) => a.label.localeCompare(b.label)) : []),
@@ -75,9 +75,9 @@ export function VenueTable() {
 
       <Card title="Pair">
         <div className="c-controls">
-          <TokenSelect value={inSym} onChange={setInSym} tokens={TOKENS} exclude={outSym} />
+          <TokenSelect value={inSym} onChange={setInSym} tokens={chain.tokens} exclude={outSym} />
           <span className="c-arrow">/</span>
-          <TokenSelect value={outSym} onChange={setOutSym} tokens={TOKENS} exclude={inSym} />
+          <TokenSelect value={outSym} onChange={setOutSym} tokens={chain.tokens} exclude={inSym} />
         </div>
         {error && <ErrorNote>{error}</ErrorNote>}
       </Card>
@@ -139,7 +139,7 @@ export function VenueTable() {
                           </div>
                         </td>
                         <td className="mono">
-                          <a href={`${EXPLORER}/address/${p.pool}`} target="_blank" rel="noreferrer">
+                          <a href={`${chain.explorer}/address/${p.pool}`} target="_blank" rel="noreferrer">
                             {addr(p.pool)}
                           </a>
                         </td>

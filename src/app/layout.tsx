@@ -7,20 +7,20 @@ import './router.css';
 import './focus.css';
 
 const DESCRIPTION =
-  'Quotes every major Base venue directly from pool state, solves the optimal split across them, and executes through the venues own audited routers. No aggregator API, no keys.';
+  'Quotes every major Robinhood Chain and Base venue directly from pool state, solves the optimal split across them, and executes through the venues own audited routers. No aggregator API, no keys.';
 
 export const metadata: Metadata = {
   metadataBase: new URL('https://pathiel-dex.vercel.app'),
   title: {
-    default: 'PATHIEL DEX — on-chain route solver for Base',
+    default: 'PATHIEL DEX — on-chain route solver for Robinhood Chain and Base',
     template: '%s — PATHIEL DEX',
   },
   description: DESCRIPTION,
   applicationName: 'PATHIEL DEX',
-  keywords: ['Base', 'DEX', 'router', 'Uniswap', 'Aerodrome', 'swap', 'DeFi'],
+  keywords: ['Robinhood Chain', 'Base', 'DEX', 'router', 'Uniswap', 'Aerodrome', 'swap', 'DeFi'],
   openGraph: {
     type: 'website',
-    title: 'PATHIEL DEX — on-chain route solver for Base',
+    title: 'PATHIEL DEX — on-chain route solver for Robinhood Chain and Base',
     description: DESCRIPTION,
     siteName: 'PATHIEL DEX',
   },

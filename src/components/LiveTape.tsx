@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import type { Token } from '@/lib/chain';
+import { chainOf, type Token } from '@/lib/chain';
 import { sig } from '@/lib/format';
 import { Card, Chip, Empty } from './ui';
 
@@ -52,7 +52,7 @@ export function LiveTape({
     setStatus('connecting');
     lastEventAt.current = Date.now();
 
-    const url = `/api/stream?in=${encodeURIComponent(inSym)}&out=${encodeURIComponent(
+    const url = `/api/stream?chain=${chainOf(tokenOut).key}&in=${encodeURIComponent(inSym)}&out=${encodeURIComponent(
       outSym,
     )}&amount=${encodeURIComponent(amount)}`;
     const es = new EventSource(url);
@@ -91,7 +91,7 @@ export function LiveTape({
       clearInterval(stallCheck);
       es.close();
     };
-  }, [inSym, outSym, amount]);
+  }, [tokenOut.chainId, inSym, outSym, amount]);
 
   const label: Record<Status, string> = {
     connecting: 'connecting',

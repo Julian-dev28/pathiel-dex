@@ -13,9 +13,8 @@
 
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { bySymbol } from '../src/lib/chain';
+import { CHAINS, bySymbol as lookup } from '../src/lib/chain';
 import { client, quoteLadder, ladder, bestRoute, interpolate, encodeV3Path } from '../src/lib/quote';
-import { V3_DEPLOYMENTS } from '../src/lib/chain';
 
 const OUT = 'contracts/test/fixtures/predictions.json';
 
@@ -53,7 +52,11 @@ const CASES: [string, string, string, string?][] = [
 
 // Five blocks back: far enough that the node has settled on it, near enough
 // that public RPC still serves the state.
-const head = await client().getBlockNumber();
+// The predictions feed contracts/test/Prediction.t.sol, which forks Base.
+const chain = CHAINS.base;
+const bySymbol = (s: string) => lookup(s, chain);
+
+const head = await client(chain).getBlockNumber();
 const blockNumber = head - 5n;
 
 console.log(`pinning block ${blockNumber} (head ${head})`);
@@ -109,7 +112,7 @@ for (const [inSym, outSym, amount, forceVenue] of CASES) {
       // Uniswap's original SwapRouter, whose swap params carry a deadline.
       v3HasDeadline:
         venue.family === 'v3' && venue.hops[0].family === 'v3'
-          ? V3_DEPLOYMENTS[venue.hops[0].dex].routerHasDeadline
+          ? chain.v3[venue.hops[0].dex].routerHasDeadline
           : false,
       v3Path: venue.family === 'v3' ? encodeV3Path(venue.path, venue.hops.map((h) => (h.family === 'v3' ? h.fee : 0))) : '0x',
       predictedOut: predictedOut.toString(),

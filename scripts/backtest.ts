@@ -20,13 +20,7 @@ import { appendFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { encodeFunctionData, decodeFunctionResult, parseAbi, type Address } from 'viem';
 import { client, discover } from '../src/lib/quote';
-import {
-  bySymbol,
-  UNIV3_FACTORY,
-  V3_DEPLOYMENTS,
-  MULTICALL3,
-  type Token,
-} from '../src/lib/chain';
+import { CHAINS, MULTICALL3, type Token } from '../src/lib/chain';
 import { univ3FactoryAbi, multicall3Abi } from '../src/lib/abis';
 import {
   buildPoolIndex,
@@ -45,6 +39,10 @@ const ZERO = '0x0000000000000000000000000000000000000000';
 const span = BigInt(process.argv[2] ?? 2000);
 const maxSamples = Number(process.argv[3] ?? 30);
 
+// The backtest replays Base swaps; its dataset and fork tests are Base's.
+const chain = CHAINS.base;
+const bySymbol = (s: string) => chain.tokens.find((t) => t.symbol === s)!;
+
 const PAIRS: [Token, Token][] = [
   [bySymbol('WETH'), bySymbol('USDC')],
   [bySymbol('WETH'), bySymbol('cbBTC')],
@@ -55,7 +53,7 @@ const PAIRS: [Token, Token][] = [
   [bySymbol('WETH'), bySymbol('cbETH')],
 ];
 
-const c = client();
+const c = client(chain);
 const head = await c.getBlockNumber();
 // Two blocks of headroom: the very tip can still be reorganised, and quoting
 // against a block that later disappears produces a result nothing can reproduce.
@@ -71,7 +69,7 @@ console.log(`  ${index.size} V2/Aerodrome pools from discovery`);
 // V3 hops carry a fee tier, not an address. Resolve every deployment's tiers.
 const v3Wanted: { a: Token; b: Token; fee: number; factory: Address }[] = [];
 for (const [a, b] of PAIRS) {
-  for (const dep of V3_DEPLOYMENTS) {
+  for (const dep of chain.v3) {
     for (const fee of dep.feeTiers) {
       v3Wanted.push({ a, b, fee, factory: dep.factory as Address });
     }

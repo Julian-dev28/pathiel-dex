@@ -11,7 +11,7 @@
  */
 
 import { parseAbi } from 'viem';
-import { TOKENS } from '../src/lib/chain';
+import { CHAIN_LIST } from '../src/lib/chain';
 import { client } from '../src/lib/quote';
 
 const abi = parseAbi([
@@ -19,11 +19,12 @@ const abi = parseAbi([
   'function decimals() view returns (uint8)',
 ]);
 
-const c = client();
 let failures = 0;
+const TOKENS = CHAIN_LIST.flatMap((chain) => chain.tokens.map((t) => ({ t, chain })));
 
 const results = await Promise.all(
-  TOKENS.map(async (t) => {
+  TOKENS.map(async ({ t, chain }) => {
+    const c = client(chain);
     try {
       const [symbol, decimals] = await Promise.all([
         c.readContract({ address: t.address, abi, functionName: 'symbol' }),
@@ -64,4 +65,4 @@ if (failures > 0) {
   console.error(`\n${failures} token(s) do not match the chain`);
   process.exit(1);
 }
-console.log(`\n${TOKENS.length} tokens verified against Base mainnet`);
+console.log(`\n${TOKENS.length} tokens verified against ${CHAIN_LIST.map((c) => c.name).join(' and ')}`);

@@ -16,7 +16,7 @@
  */
 
 import { writeFileSync } from 'node:fs';
-import { bySymbol } from '../src/lib/chain';
+import { CHAINS, bySymbol as lookup } from '../src/lib/chain';
 import { client, quoteLadder, ladder, bestRoute } from '../src/lib/quote';
 import { hopCostInToken } from '../src/lib/gas';
 
@@ -47,7 +47,11 @@ type Row = {
   chosen: string;
 };
 
-const head = await client().getBlockNumber();
+// The committed benchmark is Base's; the pairs below are Base tokens.
+const chain = CHAINS.base;
+const bySymbol = (s: string) => lookup(s, chain);
+
+const head = await client(chain).getBlockNumber();
 const blockNumber = head - 5n;
 console.log(`benchmarking at block ${blockNumber}\n`);
 

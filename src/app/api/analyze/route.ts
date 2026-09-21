@@ -1,5 +1,5 @@
 /**
- * GET /api/analyze?in=WETH&out=USDC&amount=1&slippage=50
+ * GET /api/analyze?chain=robinhood&in=WETH&out=USDG&amount=1&slippage=50
  *
  * Execution intelligence for a pair: what a slippage tolerance is actually
  * worth to an attacker, what tolerance the pair's own price movement justifies,
@@ -13,14 +13,7 @@
 
 import { NextResponse } from 'next/server';
 import { encodeFunctionData, decodeFunctionResult, parseAbi, type Address } from 'viem';
-import {
-  bySymbol,
-  UNIV3_FACTORY,
-  MULTICALL3,
-  WETH,
-  USDC,
-  type Token,
-} from '@/lib/chain';
+import { bySymbol, chainByKey, chainOf, MULTICALL3, type Token } from '@/lib/chain';
 import { client, quoteLadder, ladder, analysisLadder, bestRoute, interpolate } from '@/lib/quote';
 import { hopCostInToken, gasPriceWei, GAS_PER_EXTRA_HOP } from '@/lib/gas';
 import {
@@ -28,7 +21,7 @@ import {
   combineDrift,
   exposureAt,
   recommendSlippage,
-  INCLUSION_BLOCKS,
+  inclusionBlocks,
 } from '@/lib/exposure';
 import { findArb, capacityOf, fragmentation } from '@/lib/arb';
 import { univ3FactoryAbi, multicall3Abi } from '@/lib/abis';
@@ -59,14 +52,17 @@ const analyzeCache = new TtlCache<unknown>(20_000);
  * from reserves per block, which is a great deal more work for a statistic.
  */
 async function referencePools(a: Token, b: Token): Promise<Address[]> {
+  const chain = chainOf(a);
+  // Uniswap V3's pools: they emit the Swap event the drift is measured from.
+  const factory = chain.v3[0].factory;
   const tiers = [500, 3000, 100, 10000];
-  const res = (await client().readContract({
+  const res = (await client(chain).readContract({
     address: MULTICALL3,
     abi: MC3,
     functionName: 'aggregate3',
     args: [
       tiers.map((fee) => ({
-        target: UNIV3_FACTORY as Address,
+        target: factory,
         allowFailure: true,
         callData: encodeFunctionData({
           abi: V3F,
@@ -107,9 +103,9 @@ async function referencePools(a: Token, b: Token): Promise<Address[]> {
  * looking calmer than ETH, which is not a plausible fact about a memecoin;
  * it was a fact about an abandoned pool.
  */
-async function driftFromAny(pools: Address[]) {
+async function driftFromAny(pools: Address[], chain: ReturnType<typeof chainOf>) {
   if (pools.length === 0) return null;
-  const measured = await Promise.all(pools.map((p) => measureDriftEscalating(p)));
+  const measured = await Promise.all(pools.map((p) => measureDriftEscalating(p, chain)));
   return measured
     .filter((d): d is NonNullable<typeof d> => d !== null)
     .sort((a, b) => b.observations - a.observations)[0] ?? null;
@@ -123,8 +119,15 @@ export async function GET(req: Request) {
   }
 
   const url = new URL(req.url);
-  const inSym = url.searchParams.get('in') ?? 'WETH';
-  const outSym = url.searchParams.get('out') ?? 'USDC';
+  let chain;
+  try {
+    chain = chainByKey(url.searchParams.get('chain'));
+  } catch (e) {
+    return NextResponse.json({ error: (e as Error).message }, { status: 400 });
+  }
+  const WETH = chain.weth;
+  const inSym = url.searchParams.get('in') ?? WETH.symbol;
+  const outSym = url.searchParams.get('out') ?? chain.usd.symbol;
   const amountStr = (url.searchParams.get('amount') ?? '1').trim();
   const slippageBps = Number(url.searchParams.get('slippage') ?? '50');
 
@@ -132,8 +135,8 @@ export async function GET(req: Request) {
     if (!/^\d*\.?\d*$/.test(amountStr)) {
       return NextResponse.json({ error: 'amount is not a number' }, { status: 400 });
     }
-    const tokenIn = bySymbol(inSym);
-    const tokenOut = bySymbol(outSym);
+    const tokenIn = bySymbol(inSym, chain);
+    const tokenOut = bySymbol(outSym, chain);
     if (tokenIn.address === tokenOut.address) {
       return NextResponse.json({ error: 'tokenIn and tokenOut are the same' }, { status: 400 });
     }
@@ -143,10 +146,10 @@ export async function GET(req: Request) {
     }
 
     const started = Date.now();
-    const key = `${tokenIn.symbol}:${tokenOut.symbol}:${amountIn}:${slippageBps}`;
+    const key = `${chain.id}:${tokenIn.symbol}:${tokenOut.symbol}:${amountIn}:${slippageBps}`;
 
     const { value, hit } = await analyzeCache.get(key, async () => {
-      const gasWei = await gasPriceWei();
+      const gasWei = await gasPriceWei(chain);
 
       // Forward and reverse ladders, the reference pool, and both gas
       // conversions all at once: none of them depends on another's result.
@@ -154,7 +157,7 @@ export async function GET(req: Request) {
         // Spans above the trade so capacity can answer a question about sizes
         // the user did not ask for.
         quoteLadder(tokenIn, tokenOut, analysisLadder(amountIn)),
-        client().getBlockNumber(),
+        client(chain).getBlockNumber(),
         hopCostInToken(tokenOut, gasWei),
         referencePools(tokenIn, tokenOut),
       ]);
@@ -187,7 +190,7 @@ export async function GET(req: Request) {
        * number does the most damage.
        */
       const driftFor = async () => {
-        const direct = await driftFromAny(directPools);
+        const direct = await driftFromAny(directPools, chain);
         if (direct) return direct;
 
         // Both legs of the route the router would actually take, and the only
@@ -203,8 +206,8 @@ export async function GET(req: Request) {
         const needsOutLeg = tokenOut.address !== WETH.address;
 
         const [a, b] = await Promise.all([
-          needsInLeg ? referencePools(tokenIn, WETH).then(driftFromAny) : Promise.resolve(null),
-          needsOutLeg ? referencePools(WETH, tokenOut).then(driftFromAny) : Promise.resolve(null),
+          needsInLeg ? referencePools(tokenIn, WETH).then((p) => driftFromAny(p, chain)) : Promise.resolve(null),
+          needsOutLeg ? referencePools(WETH, tokenOut).then((p) => driftFromAny(p, chain)) : Promise.resolve(null),
         ]);
 
         // A leg we cannot measure means we know nothing about part of the
@@ -234,6 +237,7 @@ export async function GET(req: Request) {
       );
 
       return {
+        chain: chain.key,
         tokenIn,
         tokenOut,
         amountIn,
@@ -249,7 +253,7 @@ export async function GET(req: Request) {
         },
 
         drift: drift
-          ? { ...drift, inclusionBlocks: Number(INCLUSION_BLOCKS) }
+          ? { ...drift, inclusionBlocks: Number(inclusionBlocks(chain)) }
           : null,
         recommendation,
 

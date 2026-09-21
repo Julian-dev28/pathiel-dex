@@ -31,7 +31,7 @@
 
 import { parseAbiItem, decodeEventLog, type Address, type Log } from 'viem';
 import { client, discover, quoteLadder, ladder, bestRoute, type Venue } from './quote';
-import { byAddress, type Token } from './chain';
+import { CHAINS, byAddress, type Token } from './chain';
 
 /** Uniswap V3 and its forks. Signed amounts: negative leaves the pool. */
 export const V3_SWAP = parseAbiItem(
@@ -71,7 +71,8 @@ export async function buildPoolIndex(pairs: [Token, Token][]): Promise<PoolIndex
     const venues = await discover(a, b);
     for (const v of venues) {
       v.hops.forEach((h, i) => {
-        if (h.family === 'v3') return; // no address until the factory is asked
+        // No address until the factory is asked; V4 pools have none at all.
+        if (h.family === 'v3' || h.family === 'v4') return;
         const [x, y] = [v.path[i], v.path[i + 1]];
         // token0/token1 ordering is by address, which is how the pool reports
         // its amounts regardless of which way the trade went.
@@ -112,7 +113,8 @@ export async function fetchSwaps(
   const addresses = [...index.keys()] as Address[];
   if (addresses.length === 0) return [];
 
-  const c = client();
+  // The dataset is Base swaps; see the header.
+  const c = client(CHAINS.base);
   const [v3Logs, v2Logs] = await Promise.all([
     c.getLogs({ address: addresses, event: V3_SWAP, fromBlock, toBlock }).catch(() => []),
     c.getLogs({ address: addresses, event: V2_SWAP, fromBlock, toBlock }).catch(() => []),
@@ -243,7 +245,7 @@ export async function replay(swap: ObservedSwap): Promise<BacktestResult | null>
       differentVenue:
         venue.hops.length > 1 ||
         !venue.hops.some(
-          (h) => h.family !== 'v3' && h.pool.toLowerCase() === swap.pool.toLowerCase(),
+          (h) => h.family !== 'v3' && h.family !== 'v4' && h.pool.toLowerCase() === swap.pool.toLowerCase(),
         ),
     };
   } catch {
@@ -287,7 +289,7 @@ export function percentile(xs: number[], p: number): number {
 }
 
 export const byAddressOrThrow = (a: string): Token => {
-  const t = byAddress(a);
+  const t = byAddress(a, 'base');
   if (!t) throw new Error(`token not in table: ${a}`);
   return t;
 };

@@ -149,6 +149,10 @@ function samePool(a: Venue, b: Venue): boolean {
       ha.dex === hb.dex
     );
   }
+  if (ha.family === 'v4' || hb.family === 'v4') {
+    // V4 pools are named by their key, not an address.
+    return ha.family === 'v4' && hb.family === 'v4' && JSON.stringify(ha.key) === JSON.stringify(hb.key);
+  }
   return ha.pool.toLowerCase() === hb.pool.toLowerCase();
 }
 

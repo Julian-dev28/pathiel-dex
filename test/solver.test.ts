@@ -26,10 +26,11 @@ import { minOut } from '@/lib/execute';
 import { capacity, fragmentation } from '@/lib/arb';
 import { exposureAt, recommendSlippage } from '@/lib/exposure';
 import { toBase, fromBase } from '@/lib/format';
-import { TOKENS, bySymbol } from '@/lib/chain';
+import { CHAIN_LIST, bySymbol } from '@/lib/chain';
 
-const WETH = bySymbol('WETH');
-const USDC = bySymbol('USDC');
+// The routing maths is chain-independent; Base's tokens are used for its units.
+const WETH = bySymbol('WETH', 'base');
+const USDC = bySymbol('USDC', 'base');
 
 const venue = (id: string): Venue => ({
   id,
@@ -336,7 +337,7 @@ describe('encodeV3Path', () => {
   });
 
   it('packs two hops as token,fee,token,fee,token', () => {
-    const DAI = bySymbol('DAI');
+    const DAI = bySymbol('DAI', 'base');
     const path = encodeV3Path([WETH, USDC, DAI], [500, 100]);
     // 20 + 3 + 20 + 3 + 20 = 66 bytes = 132 hex chars
     expect(path.length).toBe(2 + 132);
@@ -345,19 +346,26 @@ describe('encodeV3Path', () => {
 });
 
 describe('token table', () => {
-  it('has no duplicate symbols or addresses', () => {
-    const symbols = TOKENS.map((t) => t.symbol);
-    const addresses = TOKENS.map((t) => t.address.toLowerCase());
+  it.each(CHAIN_LIST.map((c) => [c.name, c] as const))('%s has no duplicate symbols or addresses', (_, chain) => {
+    const symbols = chain.tokens.map((t) => t.symbol);
+    const addresses = chain.tokens.map((t) => t.address.toLowerCase());
     expect(new Set(symbols).size).toBe(symbols.length);
     expect(new Set(addresses).size).toBe(addresses.length);
+    expect(chain.tokens.every((t) => t.chainId === chain.id)).toBe(true);
   });
 
   it('rejects an unknown symbol loudly', () => {
     expect(() => bySymbol('NOTATOKEN')).toThrow(/unknown token/);
   });
 
+  it('resolves a symbol on the chain asked for, Robinhood Chain by default', () => {
+    expect(bySymbol('WETH').chainId).toBe(4663);
+    expect(bySymbol('WETH', 'base').chainId).toBe(8453);
+    expect(() => bySymbol('USDC')).toThrow(/Robinhood Chain/);
+  });
+
   it('looks tokens up case-insensitively', () => {
-    expect(bySymbol('weth').address).toBe(WETH.address);
+    expect(bySymbol('weth', 'base').address).toBe(WETH.address);
   });
 });
 

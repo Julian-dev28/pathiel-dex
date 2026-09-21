@@ -3,16 +3,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   useAccount,
+  usePublicClient,
   useReadContract,
   useSendTransaction,
   useWaitForTransactionReceipt,
   useChainId,
 } from 'wagmi';
-import { base } from 'wagmi/chains';
-import { TOKENS, bySymbol, EXPLORER } from '@/lib/chain';
+import { useQuery } from '@tanstack/react-query';
+import { bySymbol } from '@/lib/chain';
 import { fetchQuote, type QuoteResponse, type ApiVenue } from '@/lib/api';
 import { toBase, fromBase, sig, bps, addr } from '@/lib/format';
-import { buildSwap, approveTx, spenderFor, minOut, ERC20 } from '@/lib/execute';
+import { buildSwap, approvalTx, approvalLabel, pendingApprovals, minOut, ERC20 } from '@/lib/execute';
+import { usePair } from './ChainProvider';
 import { TokenSelect } from './TokenSelect';
 import { RoutePath } from './RoutePath';
 import { LiveTape } from './LiveTape';
@@ -59,8 +61,7 @@ function impactBps(v: ApiVenue | undefined): number | null {
  * if they do not.
  */
 export function Terminal() {
-  const [inSym, setInSym] = useState('WETH');
-  const [outSym, setOutSym] = useState('USDC');
+  const { chain, inSym, outSym, setInSym, setOutSym, flip } = usePair();
   const [amount, setAmount] = useState('1');
   const [slippageBps, setSlippageBps] = useState(50);
   const [acknowledgedImpact, setAcknowledgedImpact] = useState(false);
@@ -73,18 +74,21 @@ export function Terminal() {
     driftP95Bps: number;
   } | null>(null);
 
-  const [quote, setQuote] = useState<QuoteResponse | null>(null);
+  const [rawQuote, setQuote] = useState<QuoteResponse | null>(null);
+  // A quote from the chain the user just switched away from must never reach
+  // the swap button: its routers and tokens are on the other chain.
+  const quote = rawQuote && rawQuote.tokenIn.chainId === chain.id ? rawQuote : null;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
 
-  const tokenIn = useMemo(() => bySymbol(inSym), [inSym]);
-  const tokenOut = useMemo(() => bySymbol(outSym), [outSym]);
+  const tokenIn = useMemo(() => bySymbol(inSym, chain), [inSym, chain]);
+  const tokenOut = useMemo(() => bySymbol(outSym, chain), [outSym, chain]);
   const amountIn = useMemo(() => toBase(amount, tokenIn), [amount, tokenIn]);
 
   const { address, isConnected } = useAccount();
   const chainId = useChainId();
-  const wrongChain = isConnected && chainId !== base.id;
+  const wrongChain = isConnected && chainId !== chain.id;
 
   const abortRef = useRef<AbortController | null>(null);
   const runQuote = useCallback(async () => {
@@ -98,7 +102,7 @@ export function Terminal() {
     abortRef.current = ctrl;
     setLoading(true);
     try {
-      const q = await fetchQuote(inSym, outSym, amount, ctrl.signal);
+      const q = await fetchQuote(chain.key, inSym, outSym, amount, ctrl.signal);
       if (!ctrl.signal.aborted) {
         setQuote(q);
         setError(null);
@@ -110,7 +114,7 @@ export function Terminal() {
     } finally {
       if (!ctrl.signal.aborted) setLoading(false);
     }
-  }, [inSym, outSym, amount, amountIn]);
+  }, [chain.key, inSym, outSym, amount, amountIn]);
 
   useEffect(() => {
     const t = setTimeout(runQuote, 350);
@@ -127,7 +131,12 @@ export function Terminal() {
     return () => clearInterval(t);
   }, []);
 
-  useEffect(() => setAcknowledgedImpact(false), [inSym, outSym, amount]);
+  // The route the user picked, by venue id. Null means "the best one", which
+  // follows the quote as it refreshes; a pick sticks until the pair changes.
+  const [pickedId, setPickedId] = useState<string | null>(null);
+
+  useEffect(() => setAcknowledgedImpact(false), [inSym, outSym, amount, pickedId]);
+  useEffect(() => setPickedId(null), [chain.key, inSym, outSym]);
 
   // Slippage advice arrives late and never blocks the form. Nothing here
   // changes the tolerance on the user's behalf — it offers, they apply.
@@ -137,7 +146,7 @@ export function Terminal() {
     if (amountIn <= 0n || inSym === outSym) return;
     const t = setTimeout(() => {
       fetch(
-        `/api/analyze?in=${inSym}&out=${outSym}&amount=${encodeURIComponent(amount)}&slippage=50`,
+        `/api/analyze?chain=${chain.key}&in=${inSym}&out=${outSym}&amount=${encodeURIComponent(amount)}&slippage=50`,
         { cache: 'no-store' },
       )
         .then((r) => r.json())
@@ -152,30 +161,47 @@ export function Terminal() {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [inSym, outSym, amount, amountIn]);
+  }, [chain.key, inSym, outSym, amount, amountIn]);
 
   const route = quote?.route;
-  const execVenue = route?.single.allocations[0]?.venue ?? null;
+  const bestVenue = route?.single.allocations[0]?.venue ?? null;
+
+  // The best route, plus every quoted Uniswap route as an alternative, best
+  // output first. A pick that the latest quote no longer contains falls back
+  // to the best route rather than executing something stale.
+  const routeOptions = useMemo(
+    () =>
+      (quote?.venues ?? [])
+        .filter((v) => v.venue.id === bestVenue?.id || v.venue.label.startsWith('Uniswap'))
+        .sort((a, b) => (a.amountOutAtFull > b.amountOutAtFull ? -1 : 1)),
+    [quote, bestVenue],
+  );
+  const picked = routeOptions.find((v) => v.venue.id === pickedId);
+  const execVenue = picked?.venue ?? bestVenue;
   const execApiVenue = quote?.venues.find((v) => v.venue.id === execVenue?.id);
-  const spender = execVenue ? spenderFor(execVenue) : undefined;
+  // What the executed route pays at full size: the best route's own figure,
+  // or the picked route's point on its quoted ladder.
+  const expectedOut = picked ? picked.amountOutAtFull : (route?.single.amountOut ?? 0n);
+  const publicClient = usePublicClient({ chainId: chain.id });
 
   const { data: balance } = useReadContract({
     address: tokenIn.address,
     abi: ERC20,
     functionName: 'balanceOf',
     args: address ? [address] : undefined,
+    chainId: chain.id,
     query: { enabled: !!address, refetchInterval: 15_000 },
   });
 
-  const { data: allowance, refetch: refetchAllowance } = useReadContract({
-    address: tokenIn.address,
-    abi: ERC20,
-    functionName: 'allowance',
-    args: address && spender ? [address, spender] : undefined,
-    query: { enabled: !!address && !!spender },
+  // Most venues need one approval; Uniswap V4 needs two (the token to Permit2,
+  // then Permit2 to the router). The button walks them in order, one per click.
+  const { data: approvals, refetch: refetchAllowance } = useQuery({
+    queryKey: ['approvals', chain.id, address, execVenue?.id, amountIn.toString()],
+    queryFn: () => pendingApprovals(publicClient!, address!, execVenue!, amountIn),
+    enabled: !!address && !!execVenue && !!publicClient && amountIn > 0n,
   });
-
-  const needsApproval = allowance !== undefined && amountIn > 0n && (allowance as bigint) < amountIn;
+  const nextApproval = approvals?.[0];
+  const needsApproval = !!nextApproval;
   const insufficient = balance !== undefined && amountIn > (balance as bigint);
 
   const { sendTransaction, data: txHash, isPending, error: txError, reset } = useSendTransaction();
@@ -194,19 +220,19 @@ export function Terminal() {
   const secondsLeft = quote ? Math.max(0, Math.ceil((quote.expiresAt - now) / 1000)) : 0;
   const expired = !!quote && secondsLeft === 0;
 
-  const floor = quote ? minOut(quote.route.single.amountOut, slippageBps) : 0n;
-  const exposure = quote ? quote.route.single.amountOut - floor : 0n;
+  const floor = quote ? minOut(expectedOut, slippageBps) : 0n;
+  const exposure = quote ? expectedOut - floor : 0n;
 
   const onApprove = () => {
-    if (!spender) return;
+    if (!nextApproval) return;
     reset();
-    sendTransaction(approveTx(tokenIn, spender, amountIn));
+    sendTransaction({ ...approvalTx(nextApproval, amountIn), chainId: chain.id });
   };
 
   const onSwap = () => {
     if (!execVenue || !address || !quote || expired) return;
     reset();
-    sendTransaction(buildSwap(execVenue, amountIn, floor, address));
+    sendTransaction({ ...buildSwap(execVenue, amountIn, floor, address), chainId: chain.id });
   };
 
   const blocked =
@@ -215,9 +241,9 @@ export function Terminal() {
   /** One line that is always true about what the button will do next. */
   const buttonLabel = (): string => {
     if (!isConnected) return 'Connect a wallet';
-    if (wrongChain) return 'Switch to Base';
+    if (wrongChain) return `Switch to ${chain.name}`;
     if (insufficient) return `Not enough ${tokenIn.symbol}`;
-    if (needsApproval) return isPending || mining ? 'Approving…' : `Approve ${tokenIn.symbol}`;
+    if (needsApproval) return isPending || mining ? 'Approving…' : approvalLabel(nextApproval);
     if (isPending) return 'Confirm in your wallet…';
     if (mining) return 'Swapping…';
     if (expired) return 'Refreshing price…';
@@ -252,7 +278,7 @@ export function Terminal() {
             placeholder="0.0"
             aria-label={`Amount of ${tokenIn.symbol} to sell`}
           />
-          <TokenSelect value={inSym} onChange={setInSym} tokens={TOKENS} exclude={outSym} />
+          <TokenSelect value={inSym} onChange={setInSym} tokens={chain.tokens} exclude={outSym} />
         </div>
 
         <div className="c-field-foot">
@@ -279,10 +305,7 @@ export function Terminal() {
             className="c-flip"
             type="button"
             aria-label="Flip pay and receive tokens"
-            onClick={() => {
-              setInSym(outSym);
-              setOutSym(inSym);
-            }}
+            onClick={flip}
           >
             ⇅
           </button>
@@ -291,9 +314,9 @@ export function Terminal() {
         <div className="c-slot-label">You receive</div>
         <div className="c-field">
           <output className={`c-amount${quote ? '' : ' c-t-mut'}`} aria-label={`${tokenOut.symbol} received`}>
-            {quote ? sig(quote.route.single.amountOut, tokenOut) : '0.0'}
+            {quote ? sig(expectedOut, tokenOut) : '0.0'}
           </output>
-          <TokenSelect value={outSym} onChange={setOutSym} tokens={TOKENS} exclude={inSym} />
+          <TokenSelect value={outSym} onChange={setOutSym} tokens={chain.tokens} exclude={inSym} />
         </div>
 
         {!quote ? (
@@ -314,6 +337,28 @@ export function Terminal() {
                   via {execVenue.label} · <RoutePath venue={execVenue} />
                 </span>
               </div>
+            )}
+
+            {routeOptions.length > 1 && (
+              <label className="c-route-pick">
+                <span>Route</span>
+                <select
+                  className="c-route-select"
+                  value={execVenue?.id ?? ''}
+                  onChange={(e) => setPickedId(e.target.value === bestVenue?.id ? null : e.target.value)}
+                >
+                  {routeOptions.map((v) => {
+                    const best = route!.single.amountOut;
+                    const delta = best > 0n ? Number(((v.amountOutAtFull - best) * 10_000n) / best) : 0;
+                    return (
+                      <option key={v.venue.id} value={v.venue.id}>
+                        {v.venue.label} — {sig(v.amountOutAtFull, tokenOut)} {tokenOut.symbol}
+                        {v.venue.id === bestVenue?.id ? ' (best)' : delta === 0 ? '' : ` (${bps(delta)})`}
+                      </option>
+                    );
+                  })}
+                </select>
+              </label>
             )}
 
             <div className="c-guarantee">
@@ -423,8 +468,8 @@ export function Terminal() {
       {txHash && (
         <div className={`c-tx${mined ? ' ok' : ''}`}>
           <span>{mined ? '✓ Confirmed' : 'Pending…'}</span>
-          <a href={`${EXPLORER}/tx/${txHash}`} target="_blank" rel="noreferrer">
-            {addr(txHash)} on Basescan
+          <a href={`${chain.explorer}/tx/${txHash}`} target="_blank" rel="noreferrer">
+            {addr(txHash)} on {chain.explorerName}
           </a>
         </div>
       )}
@@ -522,8 +567,8 @@ export function Terminal() {
       <AccountPanel />
 
       <p className="c-foot-note">
-        Unaudited. Trades execute through Uniswap&rsquo;s and Aerodrome&rsquo;s own audited
-        routers — this app never holds your funds.
+        Unaudited. Trades execute through Uniswap&rsquo;s, PancakeSwap&rsquo;s and
+        Aerodrome&rsquo;s own audited routers — this app never holds your funds.
       </p>
     </>
   );

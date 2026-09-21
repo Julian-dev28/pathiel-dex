@@ -7,8 +7,9 @@ import { useAccount, useConnect, useDisconnect, useChainId, useSwitchChain } fro
 import type { Connector } from 'wagmi';
 import { injected } from '@wagmi/core';
 import type { EIP1193Provider } from 'viem';
-import { base } from 'wagmi/chains';
 import { addr } from '@/lib/format';
+import { CHAIN_LIST, isChainKey } from '@/lib/chain';
+import { useChain } from './ChainProvider';
 import { ThemeToggle } from './ThemeToggle';
 import { WalletModal } from './WalletModal';
 
@@ -56,6 +57,7 @@ export function Masthead() {
   const { disconnect } = useDisconnect();
   const chainId = useChainId();
   const { switchChain } = useSwitchChain();
+  const { chain, setChain } = useChain();
 
   // null until the probe below has run: the server cannot know what is
   // installed, and rendering "No wallet" while still looking tells the visitor
@@ -105,7 +107,7 @@ export function Masthead() {
     };
   }, [connectors]);
 
-  const wrongChain = isConnected && chainId !== base.id;
+  const wrongChain = isConnected && chainId !== chain.id;
 
   const pick = (connector: Connector) => {
     setPending(connector);
@@ -134,9 +136,9 @@ export function Masthead() {
       : connector;
 
     // Deliberately no chainId. wagmi's injected connector rethrows a rejected
-    // switchChain (connectors/injected.js), so asking for Base here turns a
-    // declined network prompt into a failed connection with the accounts
-    // already approved. Connect first; the masthead's "Switch to Base" button
+    // switchChain (connectors/injected.js), so asking for the chain here turns
+    // a declined network prompt into a failed connection with the accounts
+    // already approved. Connect first; the masthead's "Switch to …" button
     // handles the chain afterwards, where declining costs nothing.
     connect(
       { connector: target },
@@ -180,9 +182,21 @@ export function Masthead() {
 
         <div className="c-bar-right">
           <ThemeToggle />
+          <select
+            className="c-wallet c-chain"
+            value={chain.key}
+            onChange={(e) => isChainKey(e.target.value) && setChain(e.target.value)}
+            aria-label="Chain"
+          >
+            {CHAIN_LIST.map((c) => (
+              <option key={c.key} value={c.key}>
+                {c.name}
+              </option>
+            ))}
+          </select>
           {wrongChain ? (
-            <button className="c-wallet warn" onClick={() => switchChain({ chainId: base.id })}>
-              Switch to Base
+            <button className="c-wallet warn" onClick={() => switchChain({ chainId: chain.id })}>
+              Switch to {chain.name}
             </button>
           ) : isConnected ? (
             <button className="c-wallet" onClick={() => disconnect()} title="Disconnect">

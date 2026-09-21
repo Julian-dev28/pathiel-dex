@@ -9,9 +9,19 @@
  */
 
 import { NextResponse } from 'next/server';
-import { TOKENS, CHAIN_ID } from '@/lib/chain';
+import { CHAIN_LIST, DEFAULT_CHAIN } from '@/lib/chain';
 
 export const dynamic = 'force-dynamic';
+
+/** Every chain's symbols. Which ones are valid depends on `chain`. */
+const SYMBOLS = [...new Set(CHAIN_LIST.flatMap((c) => c.tokens.map((t) => t.symbol)))];
+
+const chainParam = {
+  name: 'chain',
+  in: 'query',
+  description: 'Which chain to route on. Token symbols are resolved on this chain.',
+  schema: { type: 'string', enum: CHAIN_LIST.map((c) => c.key), default: DEFAULT_CHAIN },
+};
 
 const bigintString = {
   type: 'string',
@@ -26,7 +36,7 @@ export async function GET() {
       title: 'PATHIEL DEX',
       version: '0.3.0',
       description:
-        'On-chain route solver for Base. Quotes every venue from pool state and solves the ' +
+        'On-chain route solver for Robinhood Chain and Base. Quotes every venue from pool state and solves the ' +
         'optimal split. No authentication: every endpoint reads public chain state, and the ' +
         'same calls work from anywhere. Rate limited to 120 requests per minute per IP.',
       license: { name: 'MIT' },
@@ -40,17 +50,18 @@ export async function GET() {
             'Quotes every discovered venue at a ladder of sizes, returns the best single ' +
             'venue, the optimal split, and every venue curve behind the decision.',
           parameters: [
+            chainParam,
             {
               name: 'in',
               in: 'query',
-              schema: { type: 'string', enum: TOKENS.map((t) => t.symbol) },
+              schema: { type: 'string', enum: SYMBOLS },
               example: 'WETH',
             },
             {
               name: 'out',
               in: 'query',
-              schema: { type: 'string', enum: TOKENS.map((t) => t.symbol) },
-              example: 'USDC',
+              schema: { type: 'string', enum: SYMBOLS },
+              example: 'USDG',
             },
             {
               name: 'amount',
@@ -92,8 +103,8 @@ export async function GET() {
                 },
               },
             },
-            400: { description: 'Unknown token, identical tokens, or an unparseable amount' },
-            404: { description: 'No pool quotes this pair on Base' },
+            400: { description: 'Unknown chain or token, identical tokens, or an unparseable amount' },
+            404: { description: 'No pool quotes this pair on the chain' },
             429: { description: 'Rate limited. Retry-After header is set.' },
           },
         },
@@ -107,6 +118,7 @@ export async function GET() {
             'drift, capacity at several impact budgets, liquidity fragmentation, and the best ' +
             'cross-venue round trip. Cached 20s.',
           parameters: [
+            chainParam,
             { name: 'in', in: 'query', schema: { type: 'string' } },
             { name: 'out', in: 'query', schema: { type: 'string' } },
             { name: 'amount', in: 'query', schema: { type: 'string' } },
@@ -160,7 +172,7 @@ export async function GET() {
                         nullable: true,
                         description:
                           'Best two-venue round trip and the size that maximises it. Usually ' +
-                          'unprofitable: these close within a block on Base.',
+                          'unprofitable: these close within a block.',
                       },
                     },
                   },
@@ -180,6 +192,7 @@ export async function GET() {
             'Every distinct pool the router would consider, including pools that only appear ' +
             'mid-route on a two-hop path, with each pool’s ERC-20 balances.',
           parameters: [
+            chainParam,
             { name: 'in', in: 'query', schema: { type: 'string' } },
             { name: 'out', in: 'query', schema: { type: 'string' } },
           ],
@@ -194,6 +207,7 @@ export async function GET() {
             'changes the answer, then `bye` at the ten-minute cap. Coalesced to at most one ' +
             'quote every six seconds; unchanged quotes are not sent.',
           parameters: [
+            chainParam,
             { name: 'in', in: 'query', schema: { type: 'string' } },
             { name: 'out', in: 'query', schema: { type: 'string' } },
             { name: 'amount', in: 'query', schema: { type: 'string' } },
@@ -257,6 +271,7 @@ export async function GET() {
         Token: {
           type: 'object',
           properties: {
+            chainId: { type: 'integer' },
             symbol: { type: 'string' },
             name: { type: 'string' },
             address: { type: 'string', pattern: '^0x[a-fA-F0-9]{40}$' },
@@ -265,6 +280,6 @@ export async function GET() {
         },
       },
     },
-    'x-chain': { chainId: CHAIN_ID, name: 'Base' },
+    'x-chains': CHAIN_LIST.map((c) => ({ key: c.key, chainId: c.id, name: c.name })),
   });
 }
