@@ -51,7 +51,7 @@ const chainArg = {
   chain: z
     .enum(chainKeys)
     .default(DEFAULT_CHAIN)
-    .describe('Chain to trade on: "robinhood" (Robinhood Chain, 4663, the default) or "base" (Base, 8453)'),
+    .describe('Chain to trade on: "robinhood" (Robinhood Chain, 4663, the default), "base" (Base, 8453) or "xlayer" (X Layer, 196)'),
 };
 const pair = {
   ...chainArg,
@@ -209,7 +209,7 @@ export function registerTools(server: McpServer, account?: PrivateKeyAccount) {
     {
       title: 'List tokens',
       description:
-        'Every token this router can quote and swap on the chosen chain — Robinhood Chain (4663, default: tokenized stocks and ETFs, USDG, WETH) or Base (8453): symbol, name, address, decimals. Tokens are passed to the other tools by symbol.',
+        'Every token this router can quote and swap on the chosen chain — Robinhood Chain (4663, default: tokenized stocks and ETFs, USDG, WETH), Base (8453) or X Layer (196: wrapped xStocks, USDG, USDC, USD₮0, xETH, xBTC): symbol, name, address, decimals. Tokens are passed to the other tools by symbol.',
       inputSchema: z.object(chainArg),
     },
     async ({ chain }) => text(chainByKey(chain).tokens),
@@ -220,7 +220,7 @@ export function registerTools(server: McpServer, account?: PrivateKeyAccount) {
     {
       title: 'Get quote',
       description:
-        'Quote selling `amount` of tokenIn for tokenOut across every DEX venue on the chain — on Robinhood Chain (default) Uniswap V2/V3/V4 and PancakeSwap V3, with two-hop routes through WETH or USDG; on Base Uniswap V2/V3, PancakeSwap V3, SushiSwap, BaseSwap and Aerodrome, through WETH or USDC. Returns the best single venue, whether splitting across venues would do better net of gas, price impact, and the block the prices were read at.',
+        'Quote selling `amount` of tokenIn for tokenOut across every DEX venue on the chain — on Robinhood Chain (default) Uniswap V2/V3/V4 and PancakeSwap V3, with two-hop routes through WETH or USDG; on Base Uniswap V2/V3, PancakeSwap V3, SushiSwap, BaseSwap and Aerodrome, through WETH or USDC; on X Layer Uniswap V2/V3/V4, through USDG, USDC or xETH. Returns the best single venue, whether splitting across venues would do better net of gas, price impact, and the block the prices were read at.',
       inputSchema: z.object(pair),
     },
     async ({ chain: chainKey, tokenIn: inSym, tokenOut: outSym, amount }) => {

@@ -39,7 +39,7 @@ import {
   type Log,
 } from 'viem';
 import { client, discover, quoteLadder, ladder, bestRoute, type Venue } from './quote';
-import { byAddress, chainOf, type Token, type V4PoolKey } from './chain';
+import { byAddress, chainOf, type ChainConfig, type Token, type V4PoolKey } from './chain';
 
 /** Uniswap V3 and its forks. Signed amounts: negative leaves the pool. */
 export const V3_SWAP = parseAbiItem(
@@ -132,6 +132,23 @@ export function addV3Pools(
 }
 
 /**
+ * Every block range a scan has to be cut into for this chain's endpoint.
+ *
+ * Base and Robinhood Chain serve thousands of blocks in one query, so a scan
+ * there is a single range. X Layer refuses more than a hundred, which makes the
+ * same scan a few dozen queries; `maxLogSpan` is what the chain will serve.
+ */
+function ranges(chain: ChainConfig, fromBlock: bigint, toBlock: bigint): [bigint, bigint][] {
+  const span = BigInt(chain.maxLogSpan);
+  const out: [bigint, bigint][] = [];
+  for (let from = fromBlock; from <= toBlock; from += span) {
+    const to = from + span - 1n;
+    out.push([from, to > toBlock ? toBlock : to]);
+  }
+  return out;
+}
+
+/**
  * Fetch and decode Swap logs across a set of pools.
  *
  * `getLogs` is filtered by address list rather than issued per pool: one range
@@ -151,15 +168,26 @@ export async function fetchSwaps(
   const pools = addresses.filter((a) => index.get(a)!.family !== 'v4');
   const v4Ids = addresses.filter((a) => index.get(a)!.family === 'v4') as Hex[];
 
-  const [v3Logs, v2Logs, v4Logs] = await Promise.all([
-    c.getLogs({ address: pools, event: V3_SWAP, fromBlock, toBlock }).catch(() => []),
-    c.getLogs({ address: pools, event: V2_SWAP, fromBlock, toBlock }).catch(() => []),
-    chain.v4 && v4Ids.length
-      ? c
-          .getLogs({ address: chain.v4.poolManager, event: V4_SWAP, args: { id: v4Ids }, fromBlock, toBlock })
-          .catch(() => [])
-      : [],
-  ]);
+  const v3Logs: Awaited<ReturnType<typeof c.getLogs<typeof V3_SWAP>>> = [];
+  const v2Logs: Awaited<ReturnType<typeof c.getLogs<typeof V2_SWAP>>> = [];
+  const v4Logs: Awaited<ReturnType<typeof c.getLogs<typeof V4_SWAP>>> = [];
+
+  // Ranges run one after another rather than all at once: the endpoints that
+  // cap a range are the same ones that cap requests per second.
+  for (const [from, to] of ranges(chain, fromBlock, toBlock)) {
+    const [v3, v2, v4] = await Promise.all([
+      c.getLogs({ address: pools, event: V3_SWAP, fromBlock: from, toBlock: to }).catch(() => []),
+      c.getLogs({ address: pools, event: V2_SWAP, fromBlock: from, toBlock: to }).catch(() => []),
+      chain.v4 && v4Ids.length
+        ? c
+            .getLogs({ address: chain.v4.poolManager, event: V4_SWAP, args: { id: v4Ids }, fromBlock: from, toBlock: to })
+            .catch(() => [])
+        : [],
+    ]);
+    v3Logs.push(...v3);
+    v2Logs.push(...v2);
+    v4Logs.push(...v4);
+  }
 
   // A transaction with more than one Swap is a multi-hop or split route, and
   // one of its legs is not a trade we can compare against. Counted across both

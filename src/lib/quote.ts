@@ -126,7 +126,9 @@ export function client(chain: ChainConfig = CHAINS[DEFAULT_CHAIN]): PublicClient
     c = createPublicClient({
       chain: chain.viem,
       transport: fallback(
-        urls.map((url) => http(url, { batch: true, retryCount: 2, timeout: 12_000 })),
+        urls.map((url) =>
+          http(url, { batch: { batchSize: chain.maxRpcBatch }, retryCount: 2, timeout: 12_000 }),
+        ),
       ),
     }) as PublicClient;
     clients.set(chain.id, c);

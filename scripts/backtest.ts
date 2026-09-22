@@ -4,6 +4,7 @@
  *   npm run backtest                        # Base, last ~2000 blocks, up to 30 samples
  *   npm run backtest -- 4000 50             # wider window, more samples
  *   npm run backtest -- robinhood 4000 40   # Robinhood Chain
+ *   npm run backtest -- xlayer              # X Layer
  *
  * Output is appended as JSON Lines to `data/backtest.jsonl`, which is committed
  * to the repository. That is the whole storage layer, and it is deliberate: a
@@ -47,6 +48,9 @@ const chain = CHAINS[chainKey];
 const bySymbol = (s: string) => chain.tokens.find((t) => t.symbol === s)!;
 
 const span = BigInt(args[0] ?? (chainKey === 'robinhood' ? 4000 : 2000));
+if (chain.maxLogSpan < Number(span)) {
+  console.log(`  (${chain.name} serves ${chain.maxLogSpan} blocks per log query; scanning in ${Math.ceil(Number(span) / chain.maxLogSpan)} passes)`);
+}
 const maxSamples = Number(args[1] ?? 30);
 
 const PAIRS: [Token, Token][] =
@@ -61,6 +65,7 @@ const PAIRS: [Token, Token][] =
         [bySymbol('WETH'), bySymbol('cbETH')],
       ]
     : // The hubs against each other, and every other token against each hub.
+      // Same shape on Robinhood Chain and X Layer: the liquidity is hub-paired.
       [
         [chain.weth, chain.usd],
         ...chain.tokens
@@ -135,11 +140,11 @@ console.log(`  ${swaps.length} single-swap transactions found`);
 const meaningful = swaps.filter((s) => {
   const units = Number(s.amountIn) / 10 ** s.tokenIn.decimals;
   const sym = s.tokenIn.symbol;
-  if (sym === 'WETH') return units >= 0.01;
-  if (sym === 'USDC' || sym === 'DAI' || sym === 'USDG') return units >= 25;
-  if (sym === 'cbBTC') return units >= 0.0005;
-  // Robinhood's stock tokens are priced per share, tens to hundreds of dollars.
-  return units >= (chainKey === 'robinhood' ? 0.1 : 1);
+  if (sym === 'WETH' || sym === 'xETH' || sym === 'WOKB') return units >= 0.01;
+  if (sym === 'USDC' || sym === 'DAI' || sym === 'USDG' || sym === 'USD₮0') return units >= 25;
+  if (sym === 'cbBTC' || sym === 'xBTC') return units >= 0.0005;
+  // The stock tokens are priced per share, tens to hundreds of dollars.
+  return units >= (chainKey === 'base' ? 1 : 0.1);
 });
 console.log(`  ${meaningful.length} above the dust threshold`);
 

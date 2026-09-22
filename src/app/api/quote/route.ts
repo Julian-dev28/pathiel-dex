@@ -1,7 +1,7 @@
 /**
  * GET /api/quote?chain=robinhood&in=WETH&out=USDG&amount=1.5
  *
- * `chain` is `robinhood` (the default) or `base`.
+ * `chain` is `robinhood` (the default), `base` or `xlayer`.
  *
  * Runs the ladder, picks the route, prices the gas, and returns the whole
  * working — every venue's curve, not just the winner. A quote you cannot audit

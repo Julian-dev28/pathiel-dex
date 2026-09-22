@@ -36,7 +36,7 @@ export async function GET() {
       title: 'PATHIEL DEX',
       version: '0.3.0',
       description:
-        'On-chain route solver for Robinhood Chain and Base. Quotes every venue from pool state and solves the ' +
+        'On-chain route solver for Robinhood Chain, Base and X Layer. Quotes every venue from pool state and solves the ' +
         'optimal split. No authentication: every endpoint reads public chain state, and the ' +
         'same calls work from anywhere. Rate limited to 120 requests per minute per IP.',
       license: { name: 'MIT' },

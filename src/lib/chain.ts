@@ -2,10 +2,11 @@
 // have bytecode on-chain by scripts/verify-addresses.sh, which runs in CI. None
 // of them are copied from a blog post. Re-run that script after editing a table.
 
-import { base, robinhood, type Chain } from 'viem/chains';
+import { base, robinhood, xLayer, type Chain } from 'viem/chains';
 import { ROBINHOOD_V4_POOLS } from './v4-pools';
+import { XLAYER_V4_POOLS } from './v4-pools-xlayer';
 
-export type ChainKey = 'robinhood' | 'base';
+export type ChainKey = 'robinhood' | 'base' | 'xlayer';
 
 /** Robinhood Chain is the default: the app, the API and the MCP tools open on it. */
 export const DEFAULT_CHAIN: ChainKey = 'robinhood';
@@ -92,6 +93,11 @@ export type V4Deployment = {
   stateView: `0x${string}`;
   universalRouter: `0x${string}`;
   /**
+   * Only where the registry is built from recent swaps rather than from
+   * Initialize logs: it maps a pool id back to its key. See scripts/scan-v4.ts.
+   */
+  positionManager?: `0x${string}`;
+  /**
    * Hookless pools only. A hook is arbitrary code on the swap path — it can
    * charge any fee, move any balance, or revert on a whim — and quoting one is
    * no promise about executing through it. Pools with hooks are left out.
@@ -111,6 +117,17 @@ export type ChainConfig = {
   blockMs: number;
   /** Used when the gas price cannot be read; roughly the chain's fee floor. */
   fallbackGasWei: bigint;
+  /**
+   * Blocks one `eth_getLogs` may cover. X Layer's endpoint rejects anything
+   * over a hundred, so a log scan there is a loop rather than one call.
+   */
+  maxLogSpan: number;
+  /**
+   * Calls one JSON-RPC batch may carry. X Layer answers an eleventh call with
+   * `-32014 too many RPC calls in batch request` and fails the whole batch,
+   * which looks exactly like every contract on the chain having no code.
+   */
+  maxRpcBatch: number;
   tokens: Token[];
   weth: Token;
   /** The dollar the chain's liquidity is paired against. */
@@ -172,6 +189,8 @@ const ROBINHOOD: ChainConfig = {
   explorerName: 'Blockscout',
   blockMs: 100,
   fallbackGasWei: 50_000_000n,
+  maxLogSpan: 10_000,
+  maxRpcBatch: 100,
   tokens: RH_TOKENS,
   weth: RH_TOKENS[0],
   usd: RH_TOKENS[1],
@@ -258,6 +277,8 @@ const BASE: ChainConfig = {
   blockMs: 2_000,
   // Base is an L2 with a fee floor around 0.01 gwei.
   fallbackGasWei: 10_000_000n,
+  maxLogSpan: 10_000,
+  maxRpcBatch: 100,
   tokens: BASE_TOKENS,
   weth: BASE_TOKENS[0],
   usd: BASE_TOKENS[1],
@@ -310,17 +331,110 @@ const BASE: ChainConfig = {
   graphTokens: ['WETH', 'USDC', 'cbBTC', 'cbETH', 'AERO'],
 };
 
-export const CHAINS: Record<ChainKey, ChainConfig> = { robinhood: ROBINHOOD, base: BASE };
+
+// ── X Layer ─────────────────────────────────────────────────────────────────
+//
+// OKX's zkEVM L2, with 1s blocks and OKB as the gas token. Uniswap V2, V3 and
+// V4 are deployed here officially; there is no PancakeSwap. The stocks are
+// Backed's xStocks, wrapped by OKX — `wNVDAx` is the wrapper around `NVDAx` —
+// and they trade against three dollars (USDG, USDC and Tether's USD₮0) as well
+// as OKX's wrapped majors, `xETH` and `xBTC`. Those are ordinary ERC-20s: the
+// native asset here is OKB, so `weth` below is WOKB, the wrapped gas token.
+//
+// The token table is the tokens with real V3 volume, taken from a scan of
+// recent swaps rather than from a list.
+
+const XL_TOKENS = tokens(196, [
+  { symbol: 'WOKB', name: 'Wrapped OKB', address: '0xe538905cf8410324e03A5A23C1c177a474D59b2b', decimals: 18 },
+  { symbol: 'USDG', name: 'Global Dollar', address: '0x4ae46a509F6b1D9056937BA4500cb143933D2dc8', decimals: 6 },
+  { symbol: 'USDC', name: 'USD Coin', address: '0xB6CEceAB302E2E4948951eE7843FC24E92933061', decimals: 6 },
+  // Tether's omnichain dollar. The symbol carries a ₮, on-chain and here.
+  { symbol: 'USD₮0', name: 'USD₮0', address: '0x779Ded0c9e1022225f8E0630b35a9b54bE713736', decimals: 6 },
+  { symbol: 'xETH', name: 'OKX Wrapped ETH', address: '0xE7B000003A45145decf8a28FC755aD5eC5EA025A', decimals: 18 },
+  { symbol: 'xBTC', name: 'OKX Wrapped BTC', address: '0xb7C00000bcDEeF966b20B3D884B98E64d2b06b4f', decimals: 8 },
+  { symbol: 'xSOL', name: 'OKX Wrapped SOL', address: '0x505000008DE8748DBd4422ff4687a4FC9bEba15b', decimals: 9 },
+  { symbol: 'wCOINx', name: 'Wrapped Coinbase xStock', address: '0x44C7eD7fFDF8465c9d27F60AEC845EEd3d49d56e', decimals: 18 },
+  { symbol: 'wCRCLx', name: 'Wrapped Circle xStock', address: '0xb11134F14d5B94DB60d4599DfdC3bF1bbA2150e8', decimals: 18 },
+  { symbol: 'wNVDAx', name: 'Wrapped NVIDIA xStock', address: '0xa8ddb5Cd96b5222AFe198316E9A57CAA642850D5', decimals: 18 },
+  { symbol: 'wSPCXx', name: 'Wrapped SpaceX xStock', address: '0x8e2eeD8b8B5E13Ea7BF38e50d7821d2C57309072', decimals: 18 },
+  { symbol: 'wMSTRx', name: 'Wrapped MicroStrategy xStock', address: '0x30987adF0B11dc698438a99BA04ec3a1AB2c7EaB', decimals: 18 },
+  { symbol: 'wAAPLx', name: 'Wrapped Apple xStock', address: '0x943BF64D566c32A2Bcd41AC92FB63C111cC9De8f', decimals: 18 },
+  { symbol: 'wGOOGLx', name: 'Wrapped Alphabet xStock', address: '0xf8c5308F80E459bb53d9EbE689854d9cBb2Caa6f', decimals: 18 },
+  { symbol: 'wBMNRx', name: 'Wrapped Bitmine xStock', address: '0xdaD5623B32C81AeAa75478fcfe934e9e97018c58', decimals: 18 },
+  { symbol: 'wHOODx', name: 'Wrapped Robinhood xStock', address: '0x59801175a9b2248F9bf4Ba7f82E17045C4672ec8', decimals: 18 },
+  { symbol: 'wDELLx', name: 'Wrapped Dell Technologies xStock', address: '0x04DB4384013664BAa627c1a3fa4Ff0c50F37Cfd3', decimals: 18 },
+  { symbol: 'wMRVLx', name: 'Wrapped Marvell xStock', address: '0xB4eE60B6B817ca7386422Ef1A0F45EaddEa13275', decimals: 18 },
+  { symbol: 'wSNDKx', name: 'Wrapped Sandisk xStock', address: '0x75e82E2884Ea10f72FCA777449B73377f4646219', decimals: 18 },
+  { symbol: 'wINTCx', name: 'Wrapped Intel xStock', address: '0x33AA35B0271FFfE2048Cc093aB7fE60931786719', decimals: 18 },
+  { symbol: 'wTSLAx', name: 'Wrapped Tesla xStock', address: '0xc3FdBe3A68EE5dE461D30415a8165cf9Aefe1171', decimals: 18 },
+  { symbol: 'wMETAx', name: 'Wrapped Meta xStock', address: '0xe840946FfEBCd66B7C4E95095effaFaDfa0D0e56', decimals: 18 },
+]);
+
+const XLAYER: ChainConfig = {
+  key: 'xlayer',
+  id: 196,
+  name: 'X Layer',
+  viem: xLayer,
+  rpcUrls: ['https://rpc.xlayer.tech', 'https://xlayerrpc.okx.com'],
+  explorer: 'https://www.oklink.com/x-layer/evm',
+  explorerName: 'OKLink',
+  blockMs: 1_000,
+  // The chain prices gas at 0.02 gwei of OKB and rarely moves off it.
+  fallbackGasWei: 20_000_000n,
+  // The endpoint rejects a log query spanning more than a hundred blocks,
+  // and a JSON-RPC batch carrying more than ten calls.
+  maxLogSpan: 100,
+  maxRpcBatch: 10,
+  tokens: XL_TOKENS,
+  weth: XL_TOKENS[0],
+  usd: XL_TOKENS[1],
+  // Three hubs rather than two: the stocks are split between USDG and USDC,
+  // and the crypto majors trade against xETH. Leaving one out strands a third
+  // of the table behind a route that has to go the long way.
+  intermediates: [XL_TOKENS[1], XL_TOKENS[2], XL_TOKENS[4]],
+  v2: [
+    {
+      name: 'Uniswap V2',
+      factory: '0xDf38F24fE153761634Be942F9d859f3DBA857E95',
+      router: '0x182a927119D56008d921126764bF884221b10f59',
+      feeBps: 30,
+    },
+  ],
+  v3: [
+    {
+      name: 'Uniswap V3',
+      quoter: '0xD1b797D92d87B688193A2B976eFc8D577D204343',
+      router: '0x4f0C28f5926AFDA16bf2506D5D9e57Ea190f9bcA',
+      factory: '0x4B2ab38DBF28D31D467aA8993f6c2585981D6804',
+      feeTiers: [100, 500, 3000, 10000],
+      // Almost every pool on the chain is 0.05%, and the dollar pairs 0.01%.
+      multiHopTiers: [100, 500],
+      routerHasDeadline: false,
+    },
+  ],
+  v4: {
+    name: 'Uniswap V4',
+    poolManager: '0x360E68faCcca8cA495c1B759Fd9EEe466db9FB32',
+    quoter: '0x8928074CA1b241D8Ec02815881c1Af11E8bC5219',
+    stateView: '0x76Fd297e2D437cd7f76d50F01AfE6160f86e9990',
+    universalRouter: '0xDa00aE15d3A71466517129255255db7c0c0956d3',
+    positionManager: '0xcF1EAFC6928dC385A342E7C6491d371d2871458b',
+    pools: XLAYER_V4_POOLS,
+  },
+  graphTokens: ['USDG', 'USDC', 'USD₮0', 'xETH', 'xBTC', 'WOKB'],
+};
+
+export const CHAINS: Record<ChainKey, ChainConfig> = { robinhood: ROBINHOOD, base: BASE, xlayer: XLAYER };
 
 /** Robinhood Chain first: it is the default everywhere a list of chains is shown. */
-export const CHAIN_LIST: ChainConfig[] = [ROBINHOOD, BASE];
+export const CHAIN_LIST: ChainConfig[] = [ROBINHOOD, BASE, XLAYER];
 
 export const isChainKey = (s: string): s is ChainKey => s in CHAINS;
 
 /**
  * Endpoints for a chain, a private one first when configured:
- * `RPC_URL_ROBINHOOD` / `RPC_URL_BASE`. Plain `RPC_URL` predates Robinhood
- * Chain support and still means Base.
+ * `RPC_URL_ROBINHOOD` / `RPC_URL_BASE` / `RPC_URL_XLAYER`. Plain `RPC_URL`
+ * predates multi-chain support and still means Base.
  */
 export function rpcUrlsFor(chain: ChainConfig): string[] {
   const own = process.env[`RPC_URL_${chain.key.toUpperCase()}`] ?? (chain.key === 'base' ? process.env.RPC_URL : undefined);

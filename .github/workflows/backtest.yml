@@ -52,6 +52,11 @@ jobs:
         continue-on-error: true
         run: npm run backtest -- robinhood 4000 ${{ inputs.samples || '40' }}
 
+      # X Layer serves a hundred blocks per log query, so this scan is a few
+      # dozen passes rather than one.
+      - name: Replay recent X Layer swaps
+        continue-on-error: true
+        run: npm run backtest -- xlayer 2000 ${{ inputs.samples || '40' }}
 
       - name: Commit the dataset
         run: |
@@ -66,7 +71,7 @@ jobs:
           RUNS=$(wc -l < data/backtest.jsonl | tr -d ' ')
           git commit -m "data: backtest run ${RUNS}
 
-          Replayed real Base and Robinhood Chain swaps against the router. Appended by
+          Replayed real Base, Robinhood Chain and X Layer swaps against the router. Appended by
           .github/workflows/backtest.yml; see /backtest for the aggregate."
           # A scheduled job that fails because someone pushed while it ran is
           # noise, not a signal. Rebase and retry once.

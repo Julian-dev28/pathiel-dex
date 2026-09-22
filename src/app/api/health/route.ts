@@ -15,7 +15,7 @@ import { CHAIN_LIST } from '@/lib/chain';
 export const revalidate = 0;
 export const dynamic = 'force-dynamic';
 
-/** Base produces a block every two seconds, Robinhood Chain ten a second. */
+/** Base produces a block every two seconds, X Layer one, Robinhood Chain ten. */
 const STALE_AFTER_SECONDS = 60;
 
 async function probe(chain: (typeof CHAIN_LIST)[number]) {
