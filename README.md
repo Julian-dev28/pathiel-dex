@@ -89,6 +89,36 @@ trades (`npm run backtest -- xlayer`), but the public RPC does not serve
 Chain, though, its RPC does serve deep archive state, so the Solidity fork tests
 can reach it — that is the missing piece, not a permanent gap.
 
+## Perps on the same names
+
+The stocks this router quotes on three chains also trade as perpetuals, and the
+two belong on one screen: the same company, priced by a pool on three chains and
+by an oracle on a perp venue.
+
+They are not in Hyperliquid's own perp universe. The equities live in a
+builder-deployed **HIP-3 dex called `xyz`**, which the API treats as a separate
+namespace — query it without a `dex` field and you get core crypto only, which
+looks exactly like a venue with no stocks on it. That dex carries 123 markets
+and more open interest than Hyperliquid's own ETH book, and 21 of its markets
+are names this router already lists for spot.
+
+`npm run perps` prints the join: every asset, what it costs on each chain, the
+perp mark, the basis between them, and annualised funding. Spot comes from this
+router's own quote path; nothing about it is signed or sent, and every read is
+public and unauthenticated.
+
+An asset is one thing listed in several places, so `NVDA` on Robinhood Chain,
+`NVDAc` on Base, `wNVDAx` on X Layer and `xyz:NVDA` are one row. The canonical
+symbol is derived from the listed symbol rather than stored in a table that
+would drift — `src/lib/assets.ts`, with the rules pinned by unit tests, because
+folding `USDC` into an asset called `USD` or a staking derivative into `ETH`
+would quote a basis between two different things and do it silently.
+
+**Two numbers of different kinds.** A spot quote here is read from pool state:
+the pool is the price, and the fork tests check it. A perp mark comes from an
+oracle run by the HIP-3 dex's deployer, who also sets that market's parameters.
+That is a third party's number, not a chain's, and it is labelled as one.
+
 It is also an MCP server — hosted at `https://pathiel-dex.vercel.app/api/mcp`
 for quotes, and locally with your own key for trading from Claude. See [MCP](#mcp).
 
@@ -492,6 +522,7 @@ pools it already quoted. The extra-hop cost is 70,000 gas, measured in
 | `npm run verify:tokens` | Every token's on-chain symbol and decimals | RPC |
 | `npm run probe:venues` | Candidate venues: liquidity, derived fees, router selectors | RPC |
 | `npm run backtest [-- robinhood]` | Replays real Base (or Robinhood Chain) swaps against the router, appends to the dataset | RPC |
+| `npm run perps` | Spot on every chain beside the Hyperliquid perp, with basis and funding | RPC |
 
 The fork suites share one public RPC endpoint and will fail on contention if
 run alongside a backtest — the failure looks like a broken test and is a rate

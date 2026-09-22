@@ -18,6 +18,7 @@
     "test:watch": "vitest",
     "probe:venues": "tsx scripts/probe-venues.ts",
     "backtest": "tsx scripts/backtest.ts",
+    "perps": "tsx scripts/perps.ts",
     "mcp": "tsx scripts/mcp.ts",
     "scan:v4": "tsx scripts/scan-v4.ts",
     "sim:swaps": "tsx scripts/simulate-swaps.ts"
