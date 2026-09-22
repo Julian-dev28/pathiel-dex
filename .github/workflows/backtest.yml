@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       span:
-        description: 'Blocks to scan'
+        description: 'Blocks to scan on Base'
         default: '2800'
       samples:
         description: 'Trades to replay'
@@ -46,6 +46,13 @@ jobs:
       - name: Replay recent Base swaps
         run: npm run backtest -- ${{ inputs.span || '2800' }} ${{ inputs.samples || '40' }}
 
+      # Its RPC keeps about ten minutes of state, so the window is fixed well
+      # inside that. A failure here must not throw away the Base run above.
+      - name: Replay recent Robinhood Chain swaps
+        continue-on-error: true
+        run: npm run backtest -- robinhood 4000 ${{ inputs.samples || '40' }}
+
+
       - name: Commit the dataset
         run: |
           set -euo pipefail
@@ -59,7 +66,7 @@ jobs:
           RUNS=$(wc -l < data/backtest.jsonl | tr -d ' ')
           git commit -m "data: backtest run ${RUNS}
 
-          Replayed real Base swaps against the router. Appended by
+          Replayed real Base and Robinhood Chain swaps against the router. Appended by
           .github/workflows/backtest.yml; see /backtest for the aggregate."
           # A scheduled job that fails because someone pushed while it ran is
           # noise, not a signal. Rebase and retry once.

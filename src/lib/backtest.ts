@@ -4,7 +4,7 @@
  * The fork tests prove the router's quote matches what the chain would pay.
  * They do not say whether the route it picks is any *good* — for that you need
  * a counterfactual, and the honest one is already on-chain: every swap someone
- * actually executed on Base is a decision made under the same conditions, with
+ * actually executed is a decision made under the same conditions, with
  * real money, by someone who had their own router.
  *
  * So: read the Swap logs, take each trade, re-quote it as it stood one block
@@ -29,9 +29,17 @@
  *      out either, which if anything favours the observed trade.
  */
 
-import { parseAbiItem, decodeEventLog, type Address, type Log } from 'viem';
+import {
+  parseAbiItem,
+  decodeEventLog,
+  keccak256,
+  encodeAbiParameters,
+  type Address,
+  type Hex,
+  type Log,
+} from 'viem';
 import { client, discover, quoteLadder, ladder, bestRoute, type Venue } from './quote';
-import { CHAINS, byAddress, type Token } from './chain';
+import { byAddress, chainOf, type Token, type V4PoolKey } from './chain';
 
 /** Uniswap V3 and its forks. Signed amounts: negative leaves the pool. */
 export const V3_SWAP = parseAbiItem(
@@ -43,18 +51,37 @@ export const V2_SWAP = parseAbiItem(
   'event Swap(address indexed sender, uint256 amount0In, uint256 amount1In, uint256 amount0Out, uint256 amount1Out, address indexed to)',
 );
 
+/**
+ * Uniswap V4: one PoolManager emits for every pool, naming it by id. Amounts
+ * are the swapper's balance delta, the opposite sign to V3: negative is paid in.
+ */
+export const V4_SWAP = parseAbiItem(
+  'event Swap(bytes32 indexed id, address indexed sender, int128 amount0, int128 amount1, uint160 sqrtPriceX96, uint128 liquidity, int24 tick, uint24 fee)',
+);
+
+/** A V4 pool's id: the hash of its key, as the PoolManager computes it. */
+export const v4PoolId = (k: V4PoolKey): Hex =>
+  keccak256(
+    encodeAbiParameters(
+      [{ type: 'address' }, { type: 'address' }, { type: 'uint24' }, { type: 'int24' }, { type: 'address' }],
+      [k.currency0, k.currency1, k.fee, k.tickSpacing, k.hooks],
+    ),
+  );
+
 /** A trade someone actually made. */
 export type ObservedSwap = {
   blockNumber: bigint;
   txHash: `0x${string}`;
-  pool: Address;
+  /** Pool address, or pool id for V4. */
+  pool: Hex;
   tokenIn: Token;
   tokenOut: Token;
   amountIn: bigint;
   amountOut: bigint;
 };
 
-/** Pool address → the two tokens it holds, for decoding amounts to tokens. */
+/** Pool address (V4: pool id) → the two tokens it holds, for decoding amounts
+ *  to tokens. A V4 pool holding native ETH is listed under WETH. */
 export type PoolIndex = Map<string, { token0: Token; token1: Token; family: Venue['family'] }>;
 
 /**
@@ -71,9 +98,15 @@ export async function buildPoolIndex(pairs: [Token, Token][]): Promise<PoolIndex
     const venues = await discover(a, b);
     for (const v of venues) {
       v.hops.forEach((h, i) => {
-        // No address until the factory is asked; V4 pools have none at all.
-        if (h.family === 'v3' || h.family === 'v4') return;
         const [x, y] = [v.path[i], v.path[i + 1]];
+        // No address until the factory is asked.
+        if (h.family === 'v3') return;
+        if (h.family === 'v4') {
+          // currency0 is the side the hop sells when it runs zeroForOne.
+          const [token0, token1] = h.zeroForOne ? [x, y] : [y, x];
+          index.set(v4PoolId(h.key), { token0, token1, family: 'v4' });
+          return;
+        }
         // token0/token1 ordering is by address, which is how the pool reports
         // its amounts regardless of which way the trade went.
         const [token0, token1] =
@@ -113,18 +146,26 @@ export async function fetchSwaps(
   const addresses = [...index.keys()] as Address[];
   if (addresses.length === 0) return [];
 
-  // The dataset is Base swaps; see the header.
-  const c = client(CHAINS.base);
-  const [v3Logs, v2Logs] = await Promise.all([
-    c.getLogs({ address: addresses, event: V3_SWAP, fromBlock, toBlock }).catch(() => []),
-    c.getLogs({ address: addresses, event: V2_SWAP, fromBlock, toBlock }).catch(() => []),
+  const chain = chainOf(index.values().next().value!.token0);
+  const c = client(chain);
+  const pools = addresses.filter((a) => index.get(a)!.family !== 'v4');
+  const v4Ids = addresses.filter((a) => index.get(a)!.family === 'v4') as Hex[];
+
+  const [v3Logs, v2Logs, v4Logs] = await Promise.all([
+    c.getLogs({ address: pools, event: V3_SWAP, fromBlock, toBlock }).catch(() => []),
+    c.getLogs({ address: pools, event: V2_SWAP, fromBlock, toBlock }).catch(() => []),
+    chain.v4 && v4Ids.length
+      ? c
+          .getLogs({ address: chain.v4.poolManager, event: V4_SWAP, args: { id: v4Ids }, fromBlock, toBlock })
+          .catch(() => [])
+      : [],
   ]);
 
   // A transaction with more than one Swap is a multi-hop or split route, and
   // one of its legs is not a trade we can compare against. Counted across both
   // event shapes, since an aggregator can cross families in one transaction.
   const swapsPerTx = new Map<string, number>();
-  for (const log of [...v3Logs, ...v2Logs] as Log[]) {
+  for (const log of [...v3Logs, ...v2Logs, ...v4Logs] as Log[]) {
     const h = log.transactionHash!;
     swapsPerTx.set(h, (swapsPerTx.get(h) ?? 0) + 1);
   }
@@ -182,6 +223,26 @@ export async function fetchSwaps(
     } catch {
       /* not the event we thought */
     }
+  }
+
+  for (const log of v4Logs) {
+    if (swapsPerTx.get(log.transactionHash!) !== 1) continue;
+    const id = log.args.id!.toLowerCase();
+    const meta = index.get(id);
+    if (!meta) continue;
+    const a0 = log.args.amount0!;
+    const a1 = log.args.amount1!;
+    if (a0 === 0n || a1 === 0n) continue;
+    const zeroIn = a0 < 0n;
+    out.push({
+      blockNumber: log.blockNumber!,
+      txHash: log.transactionHash!,
+      pool: id as Hex,
+      tokenIn: zeroIn ? meta.token0 : meta.token1,
+      tokenOut: zeroIn ? meta.token1 : meta.token0,
+      amountIn: zeroIn ? -a0 : -a1,
+      amountOut: zeroIn ? a1 : a0,
+    });
   }
 
   return out.sort((a, b) => Number(a.blockNumber - b.blockNumber));
@@ -244,8 +305,10 @@ export async function replay(swap: ObservedSwap): Promise<BacktestResult | null>
       routerHops: venue.hops.length,
       differentVenue:
         venue.hops.length > 1 ||
-        !venue.hops.some(
-          (h) => h.family !== 'v3' && h.family !== 'v4' && h.pool.toLowerCase() === swap.pool.toLowerCase(),
+        !venue.hops.some((h) =>
+          h.family === 'v4'
+            ? v4PoolId(h.key) === swap.pool.toLowerCase()
+            : h.family !== 'v3' && h.pool.toLowerCase() === swap.pool.toLowerCase(),
         ),
     };
   } catch {

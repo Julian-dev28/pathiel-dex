@@ -168,13 +168,15 @@ cbETH on Base.
 The fork tests prove the quote matches what the chain would pay. They say
 nothing about whether the route it picks is any *good* — for that you need a
 counterfactual, and the honest one is already on-chain. Every swap someone
-executed on Base is a decision made with real money by someone who had their own
+executed is a decision made with real money by someone who had their own
 router.
 
 `npm run backtest` reads the Swap logs, takes each trade, re-quotes it **as it
-stood one block earlier**, and compares.
+stood one block earlier**, and compares. `npm run backtest -- robinhood` does
+the same on Robinhood Chain, V4 pools included; the page shows the chain picked
+in the masthead.
 
-Current dataset — 2 runs, 6,263 swaps observed, 47 replayed:
+Current Base dataset — 2 runs, 6,263 swaps observed, 47 replayed:
 
 | | |
 | --- | --- |
@@ -452,7 +454,7 @@ pools it already quoted. The extra-hop cost is 70,000 gas, measured in
 | `npm run sim:swaps` | Every execution path on Robinhood Chain, simulated at the head | RPC |
 | `npm run verify:tokens` | Every token's on-chain symbol and decimals | RPC |
 | `npm run probe:venues` | Candidate venues: liquidity, derived fees, router selectors | RPC |
-| `npm run backtest` | Replays real Base swaps against the router, appends to the dataset | RPC |
+| `npm run backtest [-- robinhood]` | Replays real Base (or Robinhood Chain) swaps against the router, appends to the dataset | RPC |
 
 The fork suites share one public RPC endpoint and will fail on contention if
 run alongside a backtest — the failure looks like a broken test and is a rate
@@ -616,8 +618,9 @@ for that is a paid endpoint via `RPC_URL`, not more code.
   the send, wait and report steps around them are not yet covered by a test.
 - **The backtest sample is small and recent.** Public RPC serves roughly three
   thousand blocks of logs and a few thousand blocks of historical state, so each
-  run samples the last few hours. Depth accumulates across scheduled runs rather
-  than arriving in one pass.
+  run samples the last few hours. Robinhood Chain's RPC keeps about ten minutes
+  of state, so a run there samples the last few minutes. Depth accumulates
+  across scheduled runs rather than arriving in one pass.
 - **Metrics are per-instance.** In-process counters, so on serverless they
   answer "is this instance healthy", not "how much traffic does the product get".
 - **No Uniswap V4.** Quotable today and measured by `npm run probe:venues`, but

@@ -1,9 +1,9 @@
 /**
- * Replays real Base swaps against the router and appends the results to a
- * dataset.
+ * Replays real swaps against the router and appends the results to a dataset.
  *
- *   npm run backtest              # last ~2000 blocks, up to 30 samples
- *   npm run backtest -- 4000 50   # wider window, more samples
+ *   npm run backtest                        # Base, last ~2000 blocks, up to 30 samples
+ *   npm run backtest -- 4000 50             # wider window, more samples
+ *   npm run backtest -- robinhood 4000 40   # Robinhood Chain
  *
  * Output is appended as JSON Lines to `data/backtest.jsonl`, which is committed
  * to the repository. That is the whole storage layer, and it is deliberate: a
@@ -14,13 +14,17 @@
  * The window is bounded by what public RPC will serve — roughly 3,000 blocks of
  * logs and a few thousand blocks of historical state. A run therefore samples
  * recent history; the dataset accumulates depth over time rather than in one go.
+ *
+ * Robinhood Chain's RPC keeps about 6,000 blocks of state — ten minutes at
+ * 100ms blocks — so its window is kept well inside that: the oldest samples
+ * must still be quotable when the replay reaches them.
  */
 
 import { appendFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { encodeFunctionData, decodeFunctionResult, parseAbi, type Address } from 'viem';
 import { client, discover } from '../src/lib/quote';
-import { CHAINS, MULTICALL3, type Token } from '../src/lib/chain';
+import { CHAINS, isChainKey, MULTICALL3, type ChainKey, type Token } from '../src/lib/chain';
 import { univ3FactoryAbi, multicall3Abi } from '../src/lib/abis';
 import {
   buildPoolIndex,
@@ -36,22 +40,33 @@ const V3F = parseAbi(univ3FactoryAbi);
 const MC3 = parseAbi(multicall3Abi);
 const ZERO = '0x0000000000000000000000000000000000000000';
 
-const span = BigInt(process.argv[2] ?? 2000);
-const maxSamples = Number(process.argv[3] ?? 30);
-
-// The backtest replays Base swaps; its dataset and fork tests are Base's.
-const chain = CHAINS.base;
+// An optional leading chain key; Base when absent, as before Robinhood Chain.
+const args = process.argv.slice(2);
+const chainKey: ChainKey = args[0] && isChainKey(args[0]) ? (args.shift() as ChainKey) : 'base';
+const chain = CHAINS[chainKey];
 const bySymbol = (s: string) => chain.tokens.find((t) => t.symbol === s)!;
 
-const PAIRS: [Token, Token][] = [
-  [bySymbol('WETH'), bySymbol('USDC')],
-  [bySymbol('WETH'), bySymbol('cbBTC')],
-  [bySymbol('USDC'), bySymbol('DAI')],
-  [bySymbol('WETH'), bySymbol('DEGEN')],
-  [bySymbol('WETH'), bySymbol('AERO')],
-  [bySymbol('WETH'), bySymbol('BRETT')],
-  [bySymbol('WETH'), bySymbol('cbETH')],
-];
+const span = BigInt(args[0] ?? (chainKey === 'robinhood' ? 4000 : 2000));
+const maxSamples = Number(args[1] ?? 30);
+
+const PAIRS: [Token, Token][] =
+  chainKey === 'base'
+    ? [
+        [bySymbol('WETH'), bySymbol('USDC')],
+        [bySymbol('WETH'), bySymbol('cbBTC')],
+        [bySymbol('USDC'), bySymbol('DAI')],
+        [bySymbol('WETH'), bySymbol('DEGEN')],
+        [bySymbol('WETH'), bySymbol('AERO')],
+        [bySymbol('WETH'), bySymbol('BRETT')],
+        [bySymbol('WETH'), bySymbol('cbETH')],
+      ]
+    : // The hubs against each other, and every other token against each hub.
+      [
+        [chain.weth, chain.usd],
+        ...chain.tokens
+          .filter((t) => !chain.intermediates.includes(t))
+          .flatMap((t) => chain.intermediates.map((m): [Token, Token] => [m, t])),
+      ];
 
 const c = client(chain);
 const head = await c.getBlockNumber();
@@ -60,11 +75,11 @@ const head = await c.getBlockNumber();
 const toBlock = head - 2n;
 const fromBlock = toBlock - span;
 
-console.log(`scanning blocks ${fromBlock}..${toBlock} (${span} blocks)\n`);
+console.log(`${chain.name}: scanning blocks ${fromBlock}..${toBlock} (${span} blocks)\n`);
 
 // ── pool index ──────────────────────────────────────────────────────────────
 const index = await buildPoolIndex(PAIRS);
-console.log(`  ${index.size} V2/Aerodrome pools from discovery`);
+console.log(`  ${index.size} V2/Aerodrome/V4 pools from discovery`);
 
 // V3 hops carry a fee tier, not an address. Resolve every deployment's tiers.
 const v3Wanted: { a: Token; b: Token; fee: number; factory: Address }[] = [];
@@ -119,10 +134,12 @@ console.log(`  ${swaps.length} single-swap transactions found`);
 // percentage, and there are a great many of them.
 const meaningful = swaps.filter((s) => {
   const units = Number(s.amountIn) / 10 ** s.tokenIn.decimals;
-  if (s.tokenIn.symbol === 'WETH') return units >= 0.01;
-  if (s.tokenIn.symbol === 'USDC' || s.tokenIn.symbol === 'DAI') return units >= 25;
-  if (s.tokenIn.symbol === 'cbBTC') return units >= 0.0005;
-  return units >= 1;
+  const sym = s.tokenIn.symbol;
+  if (sym === 'WETH') return units >= 0.01;
+  if (sym === 'USDC' || sym === 'DAI' || sym === 'USDG') return units >= 25;
+  if (sym === 'cbBTC') return units >= 0.0005;
+  // Robinhood's stock tokens are priced per share, tens to hundreds of dollars.
+  return units >= (chainKey === 'robinhood' ? 0.1 : 1);
 });
 console.log(`  ${meaningful.length} above the dust threshold`);
 
@@ -186,6 +203,7 @@ mkdirSync(dirname(OUT), { recursive: true });
 // rather than by trying to unpick individual rows.
 const record = {
   runAt: new Date().toISOString(),
+  chain: chainKey,
   fromBlock: fromBlock.toString(),
   toBlock: toBlock.toString(),
   observed: swaps.length,

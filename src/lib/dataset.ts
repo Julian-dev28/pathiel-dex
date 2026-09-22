@@ -20,6 +20,7 @@
 
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import type { ChainKey } from './chain';
 
 export type BacktestSample = {
   txHash: string;
@@ -36,6 +37,8 @@ export type BacktestSample = {
 
 export type BacktestRun = {
   runAt: string;
+  /** Absent on runs recorded before Robinhood Chain, which were all Base. */
+  chain?: ChainKey;
   fromBlock: string;
   toBlock: string;
   observed: number;
@@ -88,7 +91,9 @@ export function loadRuns(): BacktestRun[] {
   return runs;
 }
 
-export const allSamples = (): BacktestSample[] => loadRuns().flatMap((r) => r.results);
+const runsOn = (chain: ChainKey): BacktestRun[] => loadRuns().filter((r) => (r.chain ?? 'base') === chain);
+
+export const allSamples = (chain: ChainKey): BacktestSample[] => runsOn(chain).flatMap((r) => r.results);
 
 const median = (xs: number[]): number => {
   if (xs.length === 0) return 0;
@@ -103,10 +108,10 @@ const percentile = (xs: number[], p: number): number => {
   return s[Math.min(s.length - 1, Math.max(0, Math.round((p / 100) * (s.length - 1))))];
 };
 
-/** Everything the backtest page needs, computed once from the whole dataset. */
-export function aggregate() {
-  const runs = loadRuns();
-  const samples = allSamples();
+/** Everything the backtest page needs, computed once from one chain's runs. */
+export function aggregate(chain: ChainKey) {
+  const runs = runsOn(chain);
+  const samples = allSamples(chain);
   const edges = samples.map((s) => s.edgeBps);
   const wins = samples.filter((s) => s.edgeBps > 0);
   const losses = samples.filter((s) => s.edgeBps < 0);
