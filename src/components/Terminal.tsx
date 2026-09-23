@@ -18,6 +18,7 @@ import { usePair } from './ChainProvider';
 import { TokenSelect } from './TokenSelect';
 import { RoutePath } from './RoutePath';
 import { LiveTape } from './LiveTape';
+import { CrossChainCard } from './CrossChainCard';
 import { AccountPanel } from './AccountPanel';
 import {
   Card,
@@ -522,6 +523,8 @@ export function Terminal() {
               </p>
             </Reveal>
           </Card>
+
+          <CrossChainCard chain={chain.key} inSym={inSym} outSym={outSym} amount={amount} />
 
           <Card title="Every route" meta={`${quote.venues.length} quoted`}>
             <div className="c-scroll">
