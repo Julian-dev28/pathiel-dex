@@ -212,10 +212,38 @@ export interface LedgerStore {
    * transaction twice, and the second attempt must not create money.
    */
   append(transfer: Transfer): Promise<[Entry, Entry]>;
+  /**
+   * Write several transfers as one indivisible act — all of them, or none.
+   *
+   * A trade is not one movement. The asset sold leaves, the asset bought
+   * arrives, and a fee is taken, and a customer whose sold leg committed while
+   * the bought leg failed has simply lost the money: the error says nothing
+   * happened, the retry is refused because the reference is already recorded,
+   * and reconciliation reports balanced because the books still sum to zero.
+   * That is not a hypothetical — one dropped connection does it.
+   *
+   * So any operation with more than one leg uses this, and the store is
+   * responsible for the transaction boundary.
+   */
+  appendAll(transfers: Transfer[]): Promise<Entry[]>;
   balance(account: AccountId): Promise<bigint>;
   entriesFor(account: AccountId, limit?: number): Promise<Entry[]>;
   /** Every entry for an asset, for reconciliation and solvency checks. */
   allEntries(asset?: string): Promise<Entry[]>;
+}
+
+/**
+ * Would this transfer overdraw the account it debits?
+ *
+ * Only customer accounts are checked: `external` is the counterparty for value
+ * entering the system and `pool` carries the venue's own position, and both are
+ * meant to run negative. Shared by every store so that local development
+ * cannot be more permissive than production — a memory store without this
+ * mints money while Postgres refuses, and anything proven against it proves
+ * nothing.
+ */
+export function overdraws(transfer: Transfer, balanceOfDebited: bigint): boolean {
+  return accountKind(transfer.from) === 'user' && balanceOfDebited < transfer.amount;
 }
 
 /**
@@ -231,14 +259,54 @@ export class MemoryLedger implements LedgerStore {
   private seenReferences = new Set<string>();
 
   async append(transfer: Transfer): Promise<[Entry, Entry]> {
-    const key = transfer.reference ? `${transfer.reason}:${transfer.reference}` : null;
-    if (key && this.seenReferences.has(key)) {
-      throw new DuplicateReference(transfer.reason, transfer.reference!);
-    }
-    const pair = entriesFor(transfer);
-    this.entries.push(...pair);
-    if (key) this.seenReferences.add(key);
+    const [pair] = await this.write([transfer]);
     return pair;
+  }
+
+  async appendAll(transfers: Transfer[]): Promise<Entry[]> {
+    const written = await this.write(transfers);
+    return written.flat();
+  }
+
+  /**
+   * Validate everything, then commit everything.
+   *
+   * Two passes rather than one so a rejection on the third transfer cannot
+   * leave the first two written — the same guarantee Postgres gets from its
+   * transaction, which is what makes the two stores interchangeable.
+   */
+  private async write(transfers: Transfer[]): Promise<[Entry, Entry][]> {
+    const pending: [Entry, Entry][] = [];
+    const keys: string[] = [];
+    // A running view of the balances this batch touches, so two legs debiting
+    // the same account inside one trade are checked against each other.
+    const provisional = new Map<AccountId, bigint>();
+
+    for (const transfer of transfers) {
+      const key = transfer.reference ? `${transfer.reason}:${transfer.reference}` : null;
+      if (key && (this.seenReferences.has(key) || keys.includes(key))) {
+        throw new DuplicateReference(transfer.reason, transfer.reference!);
+      }
+      const current =
+        provisional.get(transfer.from) ?? balanceOf(this.entries, transfer.from);
+      if (overdraws(transfer, current)) {
+        throw new LedgerError(
+          `${transfer.from} holds ${current} of ${transfer.asset}, cannot spend ${transfer.amount}`,
+        );
+      }
+      const pair = entriesFor(transfer);
+      provisional.set(transfer.from, current - transfer.amount);
+      provisional.set(
+        transfer.to,
+        (provisional.get(transfer.to) ?? balanceOf(this.entries, transfer.to)) + transfer.amount,
+      );
+      pending.push(pair);
+      if (key) keys.push(key);
+    }
+
+    for (const pair of pending) this.entries.push(...pair);
+    for (const key of keys) this.seenReferences.add(key);
+    return pending;
   }
 
   async balance(account: AccountId): Promise<bigint> {

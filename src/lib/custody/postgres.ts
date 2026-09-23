@@ -69,7 +69,13 @@ export const pgDatabase = (pool: Pool): Database => ({
   async transaction<T>(fn: (tx: Sql) => Promise<T>): Promise<T> {
     const client = await pool.connect();
     try {
-      await client.query('BEGIN');
+      // Stated, never inherited. The guard below re-derives a balance after
+      // taking a row lock, and that only sees the spend it is guarding against
+      // at READ COMMITTED: at REPEATABLE READ or SERIALIZABLE the sum comes
+      // from a snapshot older than the lock and misses it entirely. One
+      // `ALTER DATABASE ... SET default_transaction_isolation` would otherwise
+      // turn the only real double-spend defence into a no-op, silently.
+      await client.query('BEGIN ISOLATION LEVEL READ COMMITTED');
       const out = await fn(client);
       await client.query('COMMIT');
       return out;
@@ -122,10 +128,44 @@ export class PostgresLedger implements LedgerStore {
   async append(transfer: Transfer): Promise<[Entry, Entry]> {
     // The domain rules first, outside the transaction: a malformed transfer
     // should never have opened one.
-    const pair = entriesFor(transfer);
-    const [debit] = pair;
+    const [pair] = await this.writeAll([transfer]);
+    return pair;
+  }
+
+  /**
+   * Several transfers, one transaction: all of them or none.
+   *
+   * A trade's legs must not be able to land separately. Writing them one at a
+   * time left a customer debited for an asset they never received, with an
+   * error claiming nothing had happened and a retry the duplicate index
+   * refused — money gone, books balanced, reconciliation clean.
+   */
+  async appendAll(transfers: Transfer[]): Promise<Entry[]> {
+    const written = await this.writeAll(transfers);
+    return written.flat();
+  }
+
+  private async writeAll(transfers: Transfer[]): Promise<[Entry, Entry][]> {
+    const prepared = transfers.map((transfer) => ({ transfer, pair: entriesFor(transfer) }));
 
     return this.db.transaction(async (tx) => {
+      const out: [Entry, Entry][] = [];
+      for (const { transfer, pair } of prepared) {
+        const [debit] = pair;
+        await this.writeOne(tx, transfer, pair, debit);
+        out.push(pair);
+      }
+      return out;
+    });
+  }
+
+  private async writeOne(
+    tx: Sql,
+    transfer: Transfer,
+    pair: [Entry, Entry],
+    debit: Entry,
+  ): Promise<void> {
+    {
       await tx.query('INSERT INTO ledger_accounts (id) VALUES ($1) ON CONFLICT DO NOTHING', [
         debit.account,
       ]);
@@ -170,8 +210,7 @@ export class PostgresLedger implements LedgerStore {
         }
         throw error;
       }
-      return pair;
-    });
+    }
   }
 
   async balance(account: AccountId): Promise<bigint> {

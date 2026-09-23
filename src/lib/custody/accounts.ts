@@ -14,9 +14,9 @@
  *     the difference between a failed broadcast being a retry and being a
  *     customer whose balance went missing.
  *   - **Letting a balance go negative.** Every debit of a user account is
- *     checked against the balance the ledger derives, not against a cached
- *     figure, and two requests racing to spend the same dollar must not both
- *     succeed. That last part is the store's job; see the note on `spend`.
+ *     checked by the store, inside the same transaction that writes it and
+ *     under a lock on the account — an earlier check in an earlier transaction
+ *     is a check two racing requests both pass.
  *
  * A trade is two transfers, not one: the asset sold leaves the user and the
  * asset bought arrives, with the fee taken as its own entry so revenue is
@@ -100,7 +100,6 @@ export async function reserveWithdrawal(
   args: { userId: string; asset: string; amount: bigint; requestId: string },
 ): Promise<void> {
   const { userId, asset, amount, requestId } = args;
-  await spend(store, userId, asset, amount);
   await store.append({
     id: transferId('hold'),
     from: userAccount(userId, asset),
@@ -185,33 +184,33 @@ export async function recordTrade(
   if (sold.amount <= 0n || bought.amount <= 0n) {
     throw new LedgerError(`trade ${reference}: both sides must be positive`);
   }
-  await spend(store, userId, sold.asset, sold.amount);
 
   const at = Date.now();
-  await store.append({
-    id: transferId('sell'),
-    from: userAccount(userId, sold.asset),
-    to: poolAccount(venue, sold.asset),
-    asset: sold.asset,
-    amount: sold.amount,
-    reason: 'trade',
-    reference: `${reference}:sold`,
-    at,
-  });
-  await store.append({
-    id: transferId('buy'),
-    from: poolAccount(venue, bought.asset),
-    to: userAccount(userId, bought.asset),
-    asset: bought.asset,
-    amount: bought.amount,
-    reason: 'trade',
-    reference: `${reference}:bought`,
-    at,
-  });
+  const legs: Transfer[] = [
+    {
+      id: transferId('sell'),
+      from: userAccount(userId, sold.asset),
+      to: poolAccount(venue, sold.asset),
+      asset: sold.asset,
+      amount: sold.amount,
+      reason: 'trade',
+      reference: `${reference}:sold`,
+      at,
+    },
+    {
+      id: transferId('buy'),
+      from: poolAccount(venue, bought.asset),
+      to: userAccount(userId, bought.asset),
+      asset: bought.asset,
+      amount: bought.amount,
+      reason: 'trade',
+      reference: `${reference}:bought`,
+      at,
+    },
+  ];
 
   if (feeAsset && feeAmount && feeAmount > 0n) {
-    await spend(store, userId, feeAsset, feeAmount);
-    await store.append({
+    legs.push({
       id: transferId('fee'),
       from: userAccount(userId, feeAsset),
       to: revenueAccount(feeAsset),
@@ -222,31 +221,15 @@ export async function recordTrade(
       at,
     });
   }
-}
 
-/**
- * Refuse to take more from an account than it holds.
- *
- * Read-then-write, which is a race on its own: two requests can both read a
- * sufficient balance and both proceed. This check is the second line, not the
- * first — the store must serialise transfers against the same account (a
- * transaction at serializable isolation, or a row lock on the account). The
- * check stays because a guard that is cheap and occasionally redundant is
- * worth more than one that is absent when the locking is misconfigured.
- */
-async function spend(
-  store: LedgerStore,
-  userId: string,
-  asset: string,
-  amount: bigint,
-): Promise<void> {
-  const account = userAccount(userId, asset);
-  const available = await store.balance(account);
-  if (available < amount) {
-    throw new LedgerError(
-      `${account} holds ${available} of ${asset}, cannot spend ${amount}`,
-    );
-  }
+  // One act, not three. Written separately, a failure on the second or third
+  // leg left the first committed: the customer debited for an asset that never
+  // arrived, an error claiming nothing had happened, a retry the duplicate
+  // index refused, and a reconciliation that still read balanced because the
+  // books did sum to zero. The store's balance check runs inside the same
+  // transaction, so the fee can no longer be spent against a balance the trade
+  // itself emptied.
+  await store.appendAll(legs);
 }
 
 /** Everything a customer holds, for the account screen. */
