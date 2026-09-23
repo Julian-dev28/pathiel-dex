@@ -75,6 +75,57 @@ describe('splitSignature', () => {
     expect(splitSignature(withV('1b')).v).toBe(27);
     expect(splitSignature(withV('1c')).v).toBe(28);
   });
+
+  it('refuses a signature that is not 65 bytes', () => {
+    // The compact EIP-2098 form used to slice into v: NaN, serialise as null,
+    // and be rejected by the exchange without saying why.
+    expect(() => splitSignature(`${R}${S.slice(2)}` as Hex)).toThrow(/65-byte/);
+  });
+});
+
+/**
+ * The invariant the whole review card rests on.
+ *
+ * The user is shown `summary` and signs `action`. Nothing asserted that the
+ * two describe the same order, which is how a limit order sized off the mark
+ * shipped green: the signature test fed `summary`'s own numbers to both sides,
+ * so any mispricing cancelled out. These read the signed bytes instead.
+ */
+describe('the summary describes the order that gets signed', () => {
+  const signedOrder = (p: Awaited<ReturnType<typeof prepareOrder>>) => {
+    const req = p.finalize(`0x${'11'.repeat(65)}` as Hex);
+    return (req.action.orders as { a: number; b: boolean; p: string; s: string; t: unknown }[])[0];
+  };
+
+  it('agrees on asset, side, size and price for a market order', async () => {
+    const prepared = await prepareOrder({ asset: 'NVDA', side: 'buy', usd: 1000 });
+    const order = signedOrder(prepared);
+    expect(order.a).toBe(prepared.summary.assetId);
+    expect(order.b).toBe(prepared.summary.side === 'buy');
+    expect(Number(order.s)).toBe(prepared.summary.size);
+    expect(Number(order.p)).toBe(prepared.summary.priceUsd);
+  });
+
+  it('agrees for a limit order, which is where they used to differ', async () => {
+    // A limit far from the mark: sized off the mark this signed 65% more than
+    // the dollars asked for, while the summary and the gate saw the smaller
+    // number.
+    const prepared = await prepareOrder({ asset: 'NVDA', side: 'buy', usd: 1000, limitPrice: 300 });
+    const order = signedOrder(prepared);
+    expect(Number(order.s)).toBe(prepared.summary.size);
+    expect(Number(order.p)).toBe(prepared.summary.priceUsd);
+    expect(Number(order.s) * Number(order.p)).toBeLessThanOrEqual(1000);
+  });
+
+  it('never signs more notional than the dollars asked for', async () => {
+    // Rounding to nearest handed back a fifth again on a coarse market.
+    for (const usd of [25, 100, 1000, 7_777]) {
+      for (const limitPrice of [undefined, 150, 300]) {
+        const prepared = await prepareOrder({ asset: 'NVDA', side: 'buy', usd, limitPrice });
+        expect(prepared.summary.notionalUsd).toBeLessThanOrEqual(usd);
+      }
+    }
+  });
 });
 
 describe('prepareOrder', () => {
@@ -84,11 +135,11 @@ describe('prepareOrder', () => {
       market: 'xyz:NVDA',
       assetId: 110_002,
       side: 'buy',
-      size: 5.52,
+      size: 5.49,
       markUsd: 181.23,
       // 50bp through the book, rounded to 5 significant figures.
       priceUsd: 182.14,
-      notionalUsd: 5.52 * 182.14,
+      notionalUsd: 5.49 * 182.14,
       orderType: 'market (IOC through the book)',
       maxLeverage: 5,
     });
@@ -152,7 +203,7 @@ describe('the wallet path against the key path', () => {
     const signed = await walletSign(prepared);
     expect(signed.nonce).toBe(NONCE);
     expect(signed.signature).toEqual(
-      (await buildOrder(KEY, { asset: 110_002, isBuy: true, size: 5.52, price: 182.14, tif: 'Ioc' }, { nonce: NONCE }))
+      (await buildOrder(KEY, { asset: 110_002, isBuy: true, size: 5.49, price: 182.14, tif: 'Ioc' }, { nonce: NONCE }))
         .signature,
     );
   });

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useAccount, useSignTypedData } from 'wagmi';
 import type { AccountBalances, PerpAccount } from '@/lib/balances';
 import type { PerpRow } from '@/lib/perps';
@@ -51,6 +51,8 @@ export function PerpTicket({ row }: { row: PerpRow | null }) {
   const [limit, setLimit] = useState('');
   const [reduceOnly, setReduceOnly] = useState(false);
   const [acknowledged, setAcknowledged] = useState(false);
+  /** Bumped by every edit, so a pricing call that outlives its form is dropped. */
+  const formToken = useRef(0);
 
   const [accounts, setAccounts] = useState<PerpAccount[] | null>(null);
   // Separate from `accounts` because an account that has never traded on this
@@ -88,7 +90,13 @@ export function PerpTicket({ row }: { row: PerpRow | null }) {
 
   // Anything the user edits invalidates the reviewed order: a signature has to
   // belong to the summary they read, not to an earlier one.
+  //
+  // The token is what makes that true of a pricing call still in flight. The
+  // effect clears `prepared` immediately, but an awaited prepareOrder from
+  // before the edit would otherwise resolve afterwards and reinstate an order
+  // for the side, size or market the user has just moved away from.
   useEffect(() => {
+    formToken.current += 1;
     setPrepared(null);
     setAcknowledged(false);
     setError(null);
@@ -116,8 +124,14 @@ export function PerpTicket({ row }: { row: PerpRow | null }) {
 
   const account = accounts?.find((a) => a.dex === row.dex);
   const marginUsd = account?.accountValueUsd ?? 0;
+  // What can actually back a new position. Value already committed to open
+  // positions cannot, and the panel two lines down has always shown both.
+  const freeMarginUsd = account?.withdrawableUsd ?? 0;
   const position = account?.positions.find((p) => p.symbol === row.symbol);
   const positionSize = position?.size ?? 0;
+  // The account's own setting where a position reveals it, the market ceiling
+  // only as a fallback. Nothing here sends updateLeverage, so this is a read.
+  const accountLev = position?.leverage && position.leverage > 0 ? position.leverage : row.maxLeverage;
 
   const sizeUsd = usdAmount(amount);
   const limitUsd = usdAmount(limit);
@@ -129,39 +143,54 @@ export function PerpTicket({ row }: { row: PerpRow | null }) {
 
   const blocked = blockedReason({
     connected: isConnected,
-    marginUsd,
+    freeMarginUsd,
+    leverage: accountLev,
     usd: sizeUsd,
     isLimit,
     limitUsd,
     reduceOnly,
     positionSize,
-    maxLeverage: row.maxLeverage,
+
     acknowledged,
   });
 
   const onReview = async () => {
+    const token = formToken.current;
     setBusy(true);
     setError(null);
     setResponse(null);
     try {
-      setPrepared(
-        await prepareOrder({
-          asset: row.symbol,
-          side,
-          usd: sizeUsd,
-          ...(isLimit ? { limitPrice: limitUsd } : {}),
-          reduceOnly,
-        }),
-      );
+      const built = await prepareOrder({
+        asset: row.symbol,
+        side,
+        usd: sizeUsd,
+        ...(isLimit ? { limitPrice: limitUsd } : {}),
+        reduceOnly,
+      });
+      // The form changed while this was pricing. Dropping the result is the
+      // only safe answer: showing it would put a summary on screen that no
+      // longer matches the controls above it.
+      if (token !== formToken.current) return;
+      setPrepared(built);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'could not build the order');
+      if (token === formToken.current) {
+        setError(e instanceof Error ? e.message : 'could not build the order');
+      }
     } finally {
-      setBusy(false);
+      if (token === formToken.current) setBusy(false);
     }
   };
 
   const onConfirm = async () => {
     if (!prepared) return;
+    // Checked again here rather than trusted from review. The acknowledgement
+    // can be withdrawn after the order is prepared, and margin can be spent by
+    // another tab in between; neither should be able to reach a signature.
+    if (blocked) {
+      setError(blocked);
+      setPrepared(null);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -184,7 +213,11 @@ export function PerpTicket({ row }: { row: PerpRow | null }) {
   const buttonLabel = (): string => {
     if (!readMargin) return 'Reading your margin…';
     if (busy) return prepared ? 'Confirm in your wallet…' : 'Pricing the order…';
-    if (prepared) return `Sign and place — ${side} ${usd(sizeUsd)} of ${row.symbol}`;
+    // Read from the prepared summary, never from the live form: those are the
+    // same only when nothing has changed since review, and if they have
+    // diverged this button is the last place it can be caught.
+    if (prepared)
+      return `Sign and place — ${prepared.summary.side} ${prepared.summary.size} ${prepared.summary.market.split(':')[1]} at ${usd(prepared.summary.priceUsd)}`;
     return blocked ?? `Review ${side === 'buy' ? 'long' : 'short'} ${usd(sizeUsd)} ${row.symbol}`;
   };
 
@@ -276,8 +309,8 @@ export function PerpTicket({ row }: { row: PerpRow | null }) {
         <div className="c-field-foot">
           <span>
             ≈ {size.toLocaleString('en-US', { maximumFractionDigits: 4 })} {row.symbol} at{' '}
-            {usd(priceUsd)}, holding {usd(marginRequiredUsd(sizeUsd, row.maxLeverage))} of margin at{' '}
-            {row.maxLeverage}×
+            {usd(priceUsd)}, holding {usd(marginRequiredUsd(sizeUsd, accountLev))} of margin at{' '}
+            {accountLev}×
           </span>
         </div>
 
@@ -378,7 +411,7 @@ export function PerpTicket({ row }: { row: PerpRow | null }) {
             <li>
               <span>Size</span>
               <span className="mono">
-                {prepared.summary.size} {row.symbol}
+                {prepared.summary.size} {prepared.summary.market.split(':')[1]}
               </span>
             </li>
             <li>

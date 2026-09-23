@@ -25,8 +25,17 @@ export const sizeAtPrice = (usd: number, priceUsd: number): number =>
  * market holds a fifth of the notional — and that ceiling is set by the dex's
  * deployer, not by this app.
  */
-export const marginRequiredUsd = (notionalUsd: number, maxLeverage: number): number =>
-  maxLeverage > 0 ? notionalUsd / maxLeverage : 0;
+/**
+ * Initial margin for a notional at a given leverage.
+ *
+ * The leverage that matters is the account's own setting, not the market's
+ * ceiling. Nothing here ever sends updateLeverage, so an account sits at
+ * whatever Hyperliquid defaults it to — quoting a $1,000 NVDA order as needing
+ * $50 "at 20×" while the account runs at 2× understates the requirement by
+ * ten times, and understating it is the direction that lets an order through.
+ */
+export const marginRequiredUsd = (notionalUsd: number, leverage: number): number =>
+  leverage > 0 ? notionalUsd / leverage : 0;
 
 /**
  * The notional against the whole margin account, which is the leverage the
@@ -68,14 +77,16 @@ export const closeOrder = (size: number, markUsd: number): { side: 'buy' | 'sell
 export type Ticket = {
   connected: boolean;
   /** Account value in this dex's own margin account, in USDC. */
-  marginUsd: number;
+  /** Collateral that is not already backing a position. */
+  freeMarginUsd: number;
   usd: number;
   isLimit: boolean;
   limitUsd: number;
   reduceOnly: boolean;
   /** Signed size of the position already open in this market. */
   positionSize: number;
-  maxLeverage: number;
+  /** The account's own leverage setting for this market, not the market's ceiling. */
+  leverage: number;
   acknowledged: boolean;
 };
 
@@ -88,14 +99,16 @@ export type Ticket = {
  */
 export function blockedReason(t: Ticket): string | null {
   if (!t.connected) return 'Connect a wallet';
-  if (t.marginUsd <= 0) return 'Fund this margin account first';
+  if (t.freeMarginUsd <= 0) return 'Fund this margin account first';
   if (t.usd <= 0) return 'Enter a dollar size';
   if (t.isLimit && t.limitUsd <= 0) return 'Enter a limit price';
   if (t.reduceOnly && t.positionSize === 0) return 'No position to reduce';
   // A close frees margin rather than locking more, so it is never blocked by
   // the size of the account that already backs the position.
-  if (!t.reduceOnly && marginRequiredUsd(t.usd, t.maxLeverage) > t.marginUsd)
-    return 'More margin than this account holds';
+  // Free collateral, not account value: an account whose value is entirely
+  // backing other positions has nothing left to open another one with.
+  if (!t.reduceOnly && marginRequiredUsd(t.usd, t.leverage) > t.freeMarginUsd)
+    return 'More margin than this account has free';
   if (!t.acknowledged) return 'Acknowledge the liquidation risk';
   return null;
 }

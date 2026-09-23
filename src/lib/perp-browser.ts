@@ -24,6 +24,7 @@
 import { l1Payload, splitSignature } from './hl-sign';
 import {
   marketPrice,
+  roundPrice,
   orderAction,
   resolveMarket,
   sendExchange,
@@ -90,9 +91,25 @@ export async function prepareOrder(intent: PerpOrderIntent): Promise<PreparedOrd
   if (!live) throw new Error(`no mark price for ${intent.asset}`);
 
   const isBuy = intent.side === 'buy';
+  const isLimit = intent.limitPrice !== undefined;
   const slippage = (intent.slippageBps ?? DEFAULT_SLIPPAGE_BPS) / 10_000;
-  const price = intent.limitPrice ?? marketPrice(live.markUsd, isBuy, slippage, market.szDecimals);
-  const size = Number((intent.usd / live.markUsd).toFixed(market.szDecimals));
+  // A user's limit price goes through the same rounding as a computed one. The
+  // exchange rejects a price carrying more than five significant figures or
+  // more than `6 - szDecimals` decimals, and says only that it is invalid.
+  const price = isLimit
+    ? roundPrice(intent.limitPrice!, market.szDecimals)
+    : marketPrice(live.markUsd, isBuy, slippage, market.szDecimals);
+
+  // Sized at the price the order will actually rest at, not at the mark. A
+  // limit set away from the mark used to buy `usd × limit / mark` — a limit
+  // 65% above the mark bought 65% more than the dollar figure asked for, and
+  // the margin check upstream had already approved the smaller number.
+  //
+  // Rounded down, not to nearest: rounding up hands back a position larger
+  // than the dollars requested, which on a coarse market is a fifth again and
+  // a margin requirement nobody agreed to.
+  const step = 10 ** market.szDecimals;
+  const size = Math.floor((intent.usd / price) * step) / step;
   if (size <= 0) throw new Error(`${intent.usd} USD is below one tick of ${market.symbol}`);
 
   const action = orderAction({
@@ -101,7 +118,7 @@ export async function prepareOrder(intent: PerpOrderIntent): Promise<PreparedOrd
     size,
     price,
     reduceOnly: intent.reduceOnly ?? false,
-    tif: intent.limitPrice ? 'Gtc' : 'Ioc',
+    tif: isLimit ? 'Gtc' : 'Ioc',
   });
   const nonce = Date.now();
 
@@ -114,7 +131,7 @@ export async function prepareOrder(intent: PerpOrderIntent): Promise<PreparedOrd
       markUsd: live.markUsd,
       priceUsd: price,
       notionalUsd: size * price,
-      orderType: intent.limitPrice ? 'limit (Gtc)' : 'market (IOC through the book)',
+      orderType: isLimit ? 'limit (Gtc)' : 'market (IOC through the book)',
       maxLeverage: market.maxLeverage,
     },
     typedData: l1Payload(action, nonce),

@@ -137,7 +137,18 @@ export async function buildOrder(agentKey: Hex, o: OrderInput, opts: L1Opts = {}
  * Python SDK, minus its spot branch — nothing here trades spot.
  */
 export function marketPrice(refPx: number, isBuy: boolean, slippage: number, szDecimals: number): number {
-  const px = refPx * (isBuy ? 1 + slippage : 1 - slippage);
+  return roundPrice(refPx * (isBuy ? 1 + slippage : 1 - slippage), szDecimals);
+}
+
+/**
+ * A price the exchange will accept.
+ *
+ * At most five significant figures and at most `6 - szDecimals` decimals. A
+ * price breaking either is rejected, and the rejection says only that the
+ * order is invalid — so a limit the user typed goes through this too, rather
+ * than being signed verbatim and bounced.
+ */
+export function roundPrice(px: number, szDecimals: number): number {
   return Number(Number(px.toPrecision(5)).toFixed(6 - szDecimals));
 }
 
@@ -351,7 +362,16 @@ export async function sendExchange(req: ExchangeRequest): Promise<unknown> {
     body: JSON.stringify(req),
   });
   if (!res.ok) throw new Error(`hyperliquid exchange: ${res.status}`);
-  const body = (await res.json()) as { status?: string; response?: unknown };
+  const body = (await res.json()) as {
+    status?: string;
+    response?: { data?: { statuses?: { error?: string }[] } };
+  };
   if (body.status === 'err') throw new Error(`hyperliquid exchange: ${JSON.stringify(body.response)}`);
+  // A rejected order is an HTTP 200 with status "ok" and the reason buried in
+  // the per-order statuses — which is how both an unfilled IOC and an
+  // insufficient-margin refusal come back. Reported as sent, they would read
+  // as a filled position that does not exist.
+  const rejected = body.response?.data?.statuses?.find((st) => st?.error);
+  if (rejected) throw new Error(`hyperliquid rejected the order: ${rejected.error}`);
   return body;
 }

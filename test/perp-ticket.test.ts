@@ -23,13 +23,13 @@ import {
 
 const ticket = (t: Partial<Ticket> = {}): Ticket => ({
   connected: true,
-  marginUsd: 1_000,
+  freeMarginUsd: 1_000,
   usd: 500,
   isLimit: false,
   limitUsd: 0,
   reduceOnly: false,
   positionSize: 0,
-  maxLeverage: 5,
+  leverage: 5,
   acknowledged: true,
   ...t,
 });
@@ -125,13 +125,13 @@ describe('blockedReason', () => {
   });
 
   it('asks for a wallet first', () => {
-    expect(blockedReason(ticket({ connected: false, marginUsd: 0, usd: 0 }))).toBe(
+    expect(blockedReason(ticket({ connected: false, freeMarginUsd: 0, usd: 0 }))).toBe(
       'Connect a wallet',
     );
   });
 
   it('refuses an order against an empty margin account', () => {
-    expect(blockedReason(ticket({ marginUsd: 0 }))).toBe('Fund this margin account first');
+    expect(blockedReason(ticket({ freeMarginUsd: 0 }))).toBe('Fund this margin account first');
   });
 
   it('refuses a zero size', () => {
@@ -148,8 +148,26 @@ describe('blockedReason', () => {
   });
 
   it('refuses a size the account cannot post margin for', () => {
-    // $10,000 on a 5× market needs $2,000 of the $1,000 held.
-    expect(blockedReason(ticket({ usd: 10_000 }))).toBe('More margin than this account holds');
+    // $10,000 at 5× needs $2,000 of the $1,000 free.
+    expect(blockedReason(ticket({ usd: 10_000 }))).toBe('More margin than this account has free');
+  });
+
+  it('measures against free collateral, not the whole account value', () => {
+    // An account worth plenty but with all of it backing other positions has
+    // nothing left to open another one with. Gating on account value let this
+    // through; the panel was showing the free figure two lines away.
+    expect(blockedReason(ticket({ usd: 1_000, freeMarginUsd: 100 }))).toBe(
+      'More margin than this account has free',
+    );
+  });
+
+  it('uses the account leverage it was given, not the market ceiling', () => {
+    // $1,000 at 20× is $50 of margin; the same order at 2× is $500. Nothing
+    // here sets leverage, so the lower, real figure is the one that gates.
+    expect(blockedReason(ticket({ usd: 1_000, leverage: 20, freeMarginUsd: 100 }))).toBeNull();
+    expect(blockedReason(ticket({ usd: 1_000, leverage: 2, freeMarginUsd: 100 }))).toBe(
+      'More margin than this account has free',
+    );
   });
 
   it('lets a close through at any size, because it frees margin', () => {

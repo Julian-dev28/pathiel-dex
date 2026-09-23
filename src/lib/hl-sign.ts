@@ -70,6 +70,12 @@ export function actionHash(
  * the account — no hint that one byte was in the other convention.
  */
 export const splitSignature = (sig: Hex): Signature => {
+  // 65 bytes, or this is not a signature we can read: a wallet returning the
+  // compact EIP-2098 form would otherwise yield v: NaN, which serialises as
+  // null and is refused by the exchange with no hint as to why.
+  if (sig.length !== 132) {
+    throw new Error(`expected a 65-byte signature, got ${(sig.length - 2) / 2} bytes`);
+  }
   const v = parseInt(sig.slice(130, 132), 16);
   return {
     r: `0x${sig.slice(2, 66)}`,

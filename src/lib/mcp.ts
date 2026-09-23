@@ -625,6 +625,20 @@ export function registerTools(server: McpServer, account?: PrivateKeyAccount, pe
     slippageBps: z.number().min(1).max(1000).default(50).describe('Market orders only: how far through the book'),
   };
 
+  /**
+   * Orders built and not yet sent, by id.
+   *
+   * `perp_order` used to take the same arguments and build again, which meant
+   * re-pricing off a fresh mark and signing a different order than the one the
+   * user was shown. An id ties the two calls together: what gets sent is the
+   * request that was reviewed, byte for byte, or nothing.
+   *
+   * Short-lived, because the nonce inside is: a stale one is refused by the
+   * exchange anyway, and holding signatures around is not a service to anyone.
+   */
+  const pendingOrders = new Map<string, { request: ExchangeRequest; summary: Record<string, unknown>; at: number }>();
+  const ORDER_TTL_MS = 120_000;
+
   server.registerTool(
     'build_perp_order',
     {
@@ -637,7 +651,24 @@ export function registerTools(server: McpServer, account?: PrivateKeyAccount, pe
       try {
         const r = await perpOrderRequest(args);
         if ('error' in r) return fail(r.error);
-        return text({ ...r.summary, signed: true, sent: false, request: r.request });
+        const now = Date.now();
+        for (const [id, held] of pendingOrders) {
+          if (now - held.at > ORDER_TTL_MS) pendingOrders.delete(id);
+        }
+        const orderId = `ord_${now.toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+        pendingOrders.set(orderId, { request: r.request, summary: r.summary, at: now });
+        // The signed request itself is deliberately not returned. It is a
+        // bearer instrument: anyone who can read this transcript could post it
+        // to the exchange until its nonce ages out, and this is the half of
+        // the pair described as the safe one.
+        return text({
+          ...r.summary,
+          orderId,
+          signed: true,
+          sent: false,
+          expiresInSeconds: ORDER_TTL_MS / 1000,
+          next: 'Show this to the user, then call perp_order with this orderId to send exactly it.',
+        });
       } catch (e) {
         return fail(firstLine(e));
       }
@@ -649,15 +680,29 @@ export function registerTools(server: McpServer, account?: PrivateKeyAccount, pe
     {
       title: 'Place a perp order',
       description:
-        'PLACES A REAL LEVERAGED ORDER on Hyperliquid with the local key, risking real money. A perp position can be liquidated: the loss is not bounded by the spread the way a swap is. Confirm the size and direction with the user — call build_perp_order first and show them — before calling this. Requires USDC in the margin account of the dex the market belongs to.',
-      inputSchema: z.object(perpArgs),
+        'PLACES A REAL LEVERAGED ORDER on Hyperliquid with the local key, risking real money. Takes only the `orderId` from build_perp_order and sends exactly that signed order — nothing is re-priced or re-sized here, so what the user approved is what goes to the exchange. A perp position can be liquidated: the loss is not bounded by the spread the way a swap is. Call build_perp_order first, show the user the summary, and only then call this. Requires USDC in the margin account of the dex the market belongs to.',
+      inputSchema: z.object({
+        orderId: z
+          .string()
+          .describe('The id from build_perp_order. Exactly that order is sent; nothing is re-priced.'),
+      }),
     },
-    async (args) => {
+    async ({ orderId }) => {
+      const held = pendingOrders.get(orderId);
+      if (!held) {
+        return fail(
+          `No order ${orderId} waiting to be sent — it expired or was already used. Call build_perp_order again and show the user the new summary.`,
+        );
+      }
+      // Used once. A retry after a failure re-prices deliberately, rather than
+      // replaying a nonce the exchange will refuse anyway.
+      pendingOrders.delete(orderId);
+      if (Date.now() - held.at > ORDER_TTL_MS) {
+        return fail(`Order ${orderId} is too old to send. Build it again and re-confirm with the user.`);
+      }
       try {
-        const r = await perpOrderRequest(args);
-        if ('error' in r) return fail(r.error);
-        const response = await sendExchange(r.request);
-        return text({ ...r.summary, sent: true, response });
+        const response = await sendExchange(held.request);
+        return text({ ...held.summary, sent: true, response });
       } catch (e) {
         return fail(`Perp order failed: ${firstLine(e)}`);
       }
