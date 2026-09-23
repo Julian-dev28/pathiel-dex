@@ -13,7 +13,7 @@
 import { NextResponse } from 'next/server';
 import { isAddress, type Address } from 'viem';
 import { isChainKey, DEFAULT_CHAIN, type ChainKey } from '@/lib/chain';
-import { planBuy, edgeOverNextBps } from '@/lib/unified';
+import { planBuy, edgeOverStayingBps, MIN_CROSSING_EDGE_BPS } from '@/lib/unified';
 import { jsonSafe } from '@/lib/format';
 import { TtlCache } from '@/lib/serve';
 
@@ -44,7 +44,11 @@ export async function GET(req: Request) {
   }
 
   try {
-    const key = `plan:${asset}:${from}:${usd}`;
+    // The wallet is in the key because the response is not the same for every
+    // caller: a bridge quote's steps carry that wallet's approve and deposit
+    // calldata. Two addresses asking the same question ten seconds apart must
+    // not be handed each other's transactions.
+    const key = `plan:${asset.toUpperCase()}:${from}:${usd}:${wallet?.toLowerCase() ?? 'none'}`;
     const { value } = await planCache.get(key, async () => {
       const plans = await planBuy({
         wallet: (wallet as Address) ?? NOBODY,
@@ -54,13 +58,27 @@ export async function GET(req: Request) {
       });
       // A bridge quote carries the origin amount in base units, which is a
       // bigint and does not survive JSON on its own.
-      return jsonSafe({ asset: asset.toUpperCase(), from, usd, edgeBps: edgeOverNextBps(plans), plans });
+      const edgeBps = edgeOverStayingBps(plans, from as ChainKey);
+      return jsonSafe({
+        asset: asset.toUpperCase(),
+        from,
+        usd,
+        /** How much better the best chain is than staying on `from`. */
+        edgeBps,
+        /** Below this, crossing is noise once gas is counted — and gas is not counted. */
+        worthCrossing: edgeBps >= MIN_CROSSING_EDGE_BPS,
+        plans,
+      });
     });
     return NextResponse.json(value as object, { headers: { 'cache-control': 'no-store' } });
   } catch (e) {
     const message = e instanceof Error ? e.message : 'planning failed';
-    // An asset nobody lists is the caller's mistake, not a server fault.
-    const status = message.startsWith('no listed asset') ? 400 : 500;
+    // An asset nobody lists, or one that is the dollar already in hand, is the
+    // caller's mistake rather than a server fault.
+    const status =
+      message.startsWith('no listed asset') || message.includes('is the dollar you are holding')
+        ? 400
+        : 500;
     return NextResponse.json({ error: message }, { status });
   }
 }

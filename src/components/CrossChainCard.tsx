@@ -27,7 +27,7 @@ type Plan = {
   effectivePriceUsd: number;
   venue: string;
   etaSeconds: number;
-  bridge: { costBps: number; etaSeconds: number } | null;
+  bridge: { costBps: number | null; etaSeconds: number } | null;
   unavailable?: string;
 };
 
@@ -45,6 +45,7 @@ export function CrossChainCard({
   const { address } = useAccount();
   const [plans, setPlans] = useState<Plan[] | null>(null);
   const [edgeBps, setEdgeBps] = useState(0);
+  const [worthCrossing, setWorthCrossing] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const asset = canonical(outSym);
@@ -67,9 +68,14 @@ export function CrossChainCard({
         if (address) q.set('wallet', address);
         const res = await fetch(`/api/plan?${q}`, { signal: ctrl.signal });
         if (!res.ok) throw new Error(String(res.status));
-        const data = (await res.json()) as { plans: Plan[]; edgeBps: number };
+        const data = (await res.json()) as {
+          plans: Plan[];
+          edgeBps: number;
+          worthCrossing: boolean;
+        };
         setPlans(data.plans);
         setEdgeBps(data.edgeBps);
+        setWorthCrossing(data.worthCrossing);
       } catch {
         // A comparison that cannot be drawn is not an error worth shouting
         // about: the quote above it is still good.
@@ -125,7 +131,11 @@ export function CrossChainCard({
                       {p.unavailable ? '—' : `$${p.effectivePriceUsd.toFixed(2)}`}
                     </td>
                     <td className="num mono">
-                      {p.unavailable ? '—' : p.bridge ? `${p.bridge.costBps.toFixed(0)}bp · ${p.bridge.etaSeconds}s` : 'none'}
+                      {p.unavailable
+                        ? '—'
+                        : p.bridge
+                          ? `${p.bridge.costBps === null ? '?' : p.bridge.costBps.toFixed(0)}bp · ${p.bridge.etaSeconds}s`
+                          : 'none'}
                     </td>
                     <td className="mono">{p.unavailable ?? p.venue}</td>
                   </tr>
@@ -134,12 +144,21 @@ export function CrossChainCard({
             </table>
           </div>
 
-          {elsewhere ? (
+          {elsewhere && worthCrossing ? (
             <p style={{ marginTop: 12 }}>
+              {/* Measured against staying here, not against the runner-up: the
+                  question is whether to move, so the comparison is to not moving. */}
               <Chip tone="good">{edgeBps.toFixed(0)}bp better</Chip>{' '}
-              on {CHAINS[best.chain].name}, after paying {best.bridge?.costBps.toFixed(0) ?? 0}bp to
-              cross. Switch the chain in the masthead to trade it there; the crossing itself is a
-              bridge deposit you sign, and nothing here sends it for you.
+              on {CHAINS[best.chain].name} than staying here, after paying{' '}
+              {best.bridge?.costBps === null ? 'an unknown cost' : `${best.bridge?.costBps.toFixed(0) ?? 0}bp`}{' '}
+              to cross. Gas is not counted on either side. Switch the chain in the masthead to trade
+              it there; the crossing itself is a bridge deposit you sign, and nothing here sends it
+              for you.
+            </p>
+          ) : elsewhere ? (
+            <p className="c-empty" style={{ marginTop: 12 }}>
+              {CHAINS[best.chain].name} prices it {edgeBps.toFixed(1)}bp better, which is inside the
+              cost of crossing and of the gas on both chains. Staying here is the better trade.
             </p>
           ) : (
             <p className="c-empty" style={{ marginTop: 12 }}>

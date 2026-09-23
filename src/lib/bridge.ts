@@ -60,8 +60,12 @@ export type BridgeQuote = {
   /** Decimal string, as the bridge reports it — the destination's own units. */
   amountInFormatted: string;
   amountOutFormatted: string;
-  /** What the crossing costs, in basis points of the input. Positive is a cost. */
-  costBps: number;
+  /**
+   * What the crossing costs, in basis points of the input. Positive is a cost.
+   * Null when the quote did not say enough to work it out — which must render
+   * as unknown, never as free.
+   */
+  costBps: number | null;
   /** The bridge's own estimate, in seconds. */
   etaSeconds: number;
   /** The transactions the user would send on the origin chain. */
@@ -97,11 +101,16 @@ const targetLabel = (t: BridgeTarget): { chain: ChainKey | 'hyperliquid'; symbol
 /**
  * Read a Relay quote into this project's shape.
  *
- * Kept separate from the request so the mapping is testable without a network,
- * and because the field that matters most — the cost of crossing — is reported
- * as a percentage string that is negative when the user loses value. This is
- * the sign flip that turns a 0.13% haircut into a 13bp cost rather than a
- * mysterious minus sign on a screen.
+ * The cost of crossing is worked out from the two amounts rather than taken
+ * from the quote's own `totalImpact.percent`, which is rounded to two decimal
+ * places: on a $1000 crossing that string turns a 6.67bp haircut into 7bp, and
+ * the amounts needed to do it properly are already in hand. The percentage is
+ * the fallback, with its sign flipped — Relay reports a haircut as negative,
+ * and a cost reads better positive.
+ *
+ * When neither can be read the answer is null rather than zero. A crossing
+ * whose price could not be determined is not a free crossing, and showing 0bp
+ * would be the most expensive kind of wrong.
  */
 export function parseBridgeQuote(
   res: RelayResponse,
@@ -111,14 +120,22 @@ export function parseBridgeQuote(
 ): BridgeQuote | null {
   const d = res.details;
   if (!d?.currencyOut?.amountFormatted || !d.currencyIn?.amountFormatted) return null;
-  const impact = Number(d.totalImpact?.percent ?? 0);
+  const inAmount = Number(d.currencyIn.amountFormatted);
+  const outAmount = Number(d.currencyOut.amountFormatted);
+  const impact = Number(d.totalImpact?.percent);
+  const costBps =
+    Number.isFinite(inAmount) && Number.isFinite(outAmount) && inAmount > 0
+      ? ((inAmount - outAmount) / inAmount) * 10_000
+      : Number.isFinite(impact)
+        ? -impact * 100
+        : null;
   return {
     from,
     to,
     amountIn,
     amountInFormatted: d.currencyIn.amountFormatted,
     amountOutFormatted: d.currencyOut.amountFormatted,
-    costBps: Number.isFinite(impact) ? -impact * 100 : 0,
+    costBps,
     etaSeconds: d.timeEstimate ?? 0,
     steps: (res.steps ?? []).map((s) => {
       const tx = s.items?.[0]?.data;

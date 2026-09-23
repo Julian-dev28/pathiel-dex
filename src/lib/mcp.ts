@@ -40,7 +40,7 @@ import { buildSwap, approvalTx, approvalLabel, pendingApprovals, minOut, ERC20 }
 import { QUOTE_TTL_MS } from './serve';
 import { solveQuote, type Solved } from './solve';
 import { unifiedAssets } from './assets';
-import { planBuy, edgeOverNextBps } from './unified';
+import { planBuy, edgeOverStayingBps, MIN_CROSSING_EDGE_BPS } from './unified';
 import { fetchPerpMarkets, perpRows, STOCK_PERP_DEX } from './perps';
 import { fetchAccount } from './balances';
 import {
@@ -358,12 +358,15 @@ export function registerTools(server: McpServer, account?: PrivateKeyAccount, pe
           asset: asset.toUpperCase(),
           holding: `${usd} on ${from}`,
           best: best ? `${best.chain} — ${best.unitsOut} ${asset.toUpperCase()}` : null,
-          edgeOverNextBps: edgeOverNextBps(plans),
+          edgeOverStayingBps: edgeOverStayingBps(plans, from),
+          worthCrossing: edgeOverStayingBps(plans, from) >= MIN_CROSSING_EDGE_BPS,
           plans: plans.map((p) => ({
             chain: p.chain,
             receive: p.unavailable ? null : p.unitsOut,
             allInPriceUsd: p.unavailable ? null : p.effectivePriceUsd,
-            crossing: p.bridge ? `${p.bridge.costBps.toFixed(0)}bp, ~${p.bridge.etaSeconds}s` : 'none',
+            crossing: p.bridge
+              ? `${p.bridge.costBps === null ? 'cost unknown' : `${p.bridge.costBps.toFixed(0)}bp`}, ~${p.bridge.etaSeconds}s`
+              : 'none',
             venue: p.venue || null,
             unavailable: p.unavailable ?? null,
           })),
