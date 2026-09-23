@@ -30,6 +30,7 @@
     "@wagmi/core": "^2.22.0",
     "mcp-handler": "^2.1.1",
     "next": "^15.5.0",
+    "pg": "^8.23.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "viem": "^2.37.0",
@@ -37,7 +38,9 @@
     "zod": "^4.6.2"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@types/node": "^22.0.0",
+    "@types/pg": "^8.23.1",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "tsx": "^4.23.13",
