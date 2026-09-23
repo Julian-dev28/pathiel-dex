@@ -1,40 +1,32 @@
 # Custody
 
-> **NOT IN USE, AND NOT SAFE TO WIRE UP.**
+> **NOT IN USE — the product is non-custodial (`src/lib/account/`).**
 >
-> The product moved to a non-custodial model (`src/lib/account/`): the customer
-> derives their own account from a signature and the venue never holds their
-> funds. Nothing outside this directory imports anything in it.
+> Nothing outside this directory imports any of it. It is kept because the
+> licensed-venue path may want it, and because the audit that followed it is
+> worth more than the code.
 >
-> An adversarial audit of this code then found defects that must be fixed
-> before a single real deposit reaches it. The worst is not an attack — it is
-> ordinary operation:
+> An adversarial audit found two critical and four high findings. **All six are
+> fixed**, each with a regression reproducing the state it demonstrated:
 >
-> - **`recordTrade` is not atomic.** It makes three separate `append` calls in
->   three transactions. A failure on the second or third — an ordinary fee
->   calculation against a balance the trade just emptied, or one dropped
->   connection — leaves the first committed, throws an error saying nothing
->   happened, poisons the retry (the reference is already recorded), and leaves
->   the customer's money gone. Reconciliation reports `balanced` and `solvent`
->   throughout.
-> - **The double-spend guard depends on an isolation level nothing sets.** The
->   design is correct only at READ COMMITTED; `BEGIN` is issued bare. One
->   managed-Postgres default turns the in-transaction re-check into a no-op,
->   and no test catches it because PGlite is single-connection.
-> - **Reconciliation cannot detect value moving between the venue and its
->   customers.** The expression reduces to `held − net deposits`, so a
->   half-applied trade, an operational wallet counted as customer funds, and a
->   balance owed on a chain holding nothing all read as `balanced`.
-> - **A reorg or a disagreeing RPC re-keys a deposit and credits it twice.**
->   `logIndex` is a position in the block, not in the transaction, and it is
->   the sole idempotency key.
-> - **`verifyChain` does not prevent what it claims.** Truncating the tail or
->   re-deriving the whole history both verify as `ok`.
-> - **The two stores are not interchangeable.** `MemoryLedger` has no balance
->   guard, so it will mint money in local development while Postgres refuses.
+> - `recordTrade` was three transactions, so a failed leg left the customer
+>   debited for an asset that never arrived, with a poisoned retry and a
+>   reconciliation reading balanced. It is one `appendAll` now.
+> - The double-spend guard assumed READ COMMITTED without setting it; one
+>   managed-Postgres default would have disabled it silently.
+> - `MemoryLedger` had no overdraft guard, so local development minted money
+>   while Postgres refused — the parity suite proved nothing.
+> - A deposit keyed on `logIndex` credited twice after a re-mine; it is now
+>   keyed by the transfer's own identity.
+> - `verifyChain` accepted a truncated or re-derived history — the forgery an
+>   operator would actually commit. Sequence numbers and an expected length.
+> - Reconciliation compared the books against a restatement of themselves.
 >
-> The full audit, with runnable reproductions, is in the conversation that
-> produced this line. Read it before reviving any of this.
+> **Still true, and not fixable in code:** there is no KYC, sanctions screening
+> or transaction monitoring here, and running this would need a DPT licence
+> under the Payment Services Act plus — for tokenised equities and perps — very
+> likely a CMS licence under the SFA. Do not put customer money behind this
+> without both.
 
 ---
 
