@@ -39,6 +39,15 @@ import { releaseWithdrawal, reserveWithdrawal, settleWithdrawal } from './accoun
  */
 export const TRAVEL_RULE_THRESHOLD_SGD = 1_500;
 
+/**
+ * How long an authorisation stays good.
+ *
+ * A signature over a payment is not a standing instruction. Without an expiry,
+ * one collected today — from a log, a compromised client, a support
+ * screenshot — authorises the same payment indefinitely.
+ */
+export const AUTHORISATION_TTL_MS = 10 * 60_000;
+
 export type WithdrawalStatus = 'reserved' | 'broadcast' | 'settled' | 'released';
 
 export type WithdrawalRequest = {
@@ -80,6 +89,11 @@ export function withdrawalMessage(req: WithdrawalRequest): string {
     `To: ${req.destination}`,
     `Chain: ${req.venue}`,
     `Account: ${req.userId}`,
+    // The request id is in the signed text because it is what makes this
+    // signature authorise one payment rather than a kind of payment. Without
+    // it, the same signature could be submitted under any number of new ids,
+    // each reserving the amount again — one authorisation, several payments.
+    `Request: ${req.id}`,
     `Nonce: ${req.nonce}`,
     `Issued At: ${new Date(req.issuedAt).toISOString()}`,
     '',
@@ -97,9 +111,16 @@ export function withdrawalMessage(req: WithdrawalRequest): string {
 export async function verifyWithdrawal(
   req: WithdrawalRequest,
   signature: `0x${string}`,
+  now = Date.now(),
 ): Promise<void> {
   if (!isAddress(req.destination)) throw new WithdrawalError('destination is not an address');
   if (req.amount <= 0n) throw new WithdrawalError('amount must be positive');
+  if (now - req.issuedAt > AUTHORISATION_TTL_MS) {
+    throw new WithdrawalError('this authorisation has expired; sign the withdrawal again');
+  }
+  if (req.issuedAt - now > 60_000) {
+    throw new WithdrawalError('this authorisation is dated in the future');
+  }
   if (needsTravelRuleData(req) && !req.beneficiary?.name) {
     throw new WithdrawalError(
       `withdrawals valued over SGD ${TRAVEL_RULE_THRESHOLD_SGD} require beneficiary information`,
@@ -127,8 +148,9 @@ export async function requestWithdrawal(
   store: LedgerStore,
   req: WithdrawalRequest,
   signature: `0x${string}`,
+  now = Date.now(),
 ): Promise<WithdrawalRequest> {
-  await verifyWithdrawal(req, signature);
+  await verifyWithdrawal(req, signature, now);
   try {
     await reserveWithdrawal(store, {
       userId: req.userId,

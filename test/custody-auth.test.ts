@@ -31,6 +31,7 @@ import {
   abandonWithdrawal,
   confirmWithdrawal,
   needsTravelRuleData,
+  AUTHORISATION_TTL_MS,
   requestWithdrawal,
   withdrawalMessage,
   type WithdrawalRequest,
@@ -207,7 +208,7 @@ describe('authorising a withdrawal', () => {
   it('reserves the amount once the customer has signed for it', async () => {
     const ledger = await funded();
     const req = withdrawal();
-    await requestWithdrawal(ledger, req, await sign(req));
+    await requestWithdrawal(ledger, req, await sign(req), NOW);
     expect(await ledger.balance(userAccount(req.userId, 'USDC'))).toBe(900_000_000n);
   });
 
@@ -217,7 +218,7 @@ describe('authorising a withdrawal', () => {
     const ledger = await funded();
     const req = withdrawal();
     const forged = await OTHER.signMessage({ message: withdrawalMessage(req) });
-    await expect(requestWithdrawal(ledger, req, forged)).rejects.toThrow(AuthError);
+    await expect(requestWithdrawal(ledger, req, forged, NOW)).rejects.toThrow(AuthError);
     expect(await ledger.balance(userAccount(req.userId, 'USDC'))).toBe(1_000_000_000n);
   });
 
@@ -227,7 +228,37 @@ describe('authorising a withdrawal', () => {
     const signed = withdrawal();
     const signature = await sign(signed);
     const swapped = { ...signed, destination: account.address };
-    await expect(requestWithdrawal(ledger, swapped, signature)).rejects.toThrow(AuthError);
+    await expect(requestWithdrawal(ledger, swapped, signature, NOW)).rejects.toThrow(AuthError);
+  });
+
+  it('refuses the same signature submitted under a new request id', async () => {
+    // Found by probing rather than by review: with the id absent from the
+    // signed text, one authorisation reserved the amount again under every new
+    // id until the balance ran out, and each reservation could then be paid.
+    const ledger = await funded();
+    const first = withdrawal({ id: 'w1', amount: 500_000_000n });
+    const signature = await sign(first);
+    await requestWithdrawal(ledger, first, signature, NOW);
+    await expect(
+      requestWithdrawal(ledger, { ...first, id: 'w2' }, signature, NOW),
+    ).rejects.toThrow(AuthError);
+    expect(await ledger.balance(userAccount(first.userId, 'USDC'))).toBe(500_000_000n);
+  });
+
+  it('refuses an authorisation older than the window', async () => {
+    // A signature over a payment is not a standing instruction.
+    const ledger = await funded();
+    const req = withdrawal();
+    const signature = await sign(req);
+    await expect(
+      requestWithdrawal(ledger, req, signature, NOW + AUTHORISATION_TTL_MS + 1),
+    ).rejects.toThrow(/expired/);
+  });
+
+  it('refuses one dated in the future', async () => {
+    const ledger = await funded();
+    const req = withdrawal({ issuedAt: NOW + 600_000 });
+    await expect(requestWithdrawal(ledger, req, await sign(req), NOW)).rejects.toThrow(/future/);
   });
 
   it('refuses a signature for a different amount', async () => {
@@ -235,7 +266,7 @@ describe('authorising a withdrawal', () => {
     const signed = withdrawal();
     const signature = await sign(signed);
     await expect(
-      requestWithdrawal(ledger, { ...signed, amount: 900_000_000n }, signature),
+      requestWithdrawal(ledger, { ...signed, amount: 900_000_000n }, signature, NOW),
     ).rejects.toThrow(AuthError);
   });
 
@@ -258,10 +289,10 @@ describe('authorising a withdrawal', () => {
     const ledger = await funded();
     const big = withdrawal({ valueSgd: 2_000 });
     expect(needsTravelRuleData(big)).toBe(true);
-    await expect(requestWithdrawal(ledger, big, await sign(big))).rejects.toThrow(/beneficiary/);
+    await expect(requestWithdrawal(ledger, big, await sign(big), NOW)).rejects.toThrow(/beneficiary/);
 
     const named = withdrawal({ valueSgd: 2_000, beneficiary: { name: 'A Person' } });
-    await expect(requestWithdrawal(ledger, named, await sign(named))).resolves.toBeTruthy();
+    await expect(requestWithdrawal(ledger, named, await sign(named), NOW)).resolves.toBeTruthy();
   });
 
   it('collects nothing extra below the threshold', async () => {
@@ -269,13 +300,13 @@ describe('authorising a withdrawal', () => {
     const ledger = await funded();
     const small = withdrawal({ valueSgd: 100 });
     expect(needsTravelRuleData(small)).toBe(false);
-    await expect(requestWithdrawal(ledger, small, await sign(small))).resolves.toBeTruthy();
+    await expect(requestWithdrawal(ledger, small, await sign(small), NOW)).resolves.toBeTruthy();
   });
 
   it('keeps owing the money until the payment confirms', async () => {
     const ledger = await funded();
     const req = withdrawal();
-    await requestWithdrawal(ledger, req, await sign(req));
+    await requestWithdrawal(ledger, req, await sign(req), NOW);
     const owedWhileInFlight = await ledger.allEntries('USDC');
     expect(
       owedWhileInFlight.reduce((n, e) => (e.account.startsWith('user:') ? n + e.amount : n), 0n),
@@ -291,7 +322,7 @@ describe('authorising a withdrawal', () => {
   it('returns the money when the payment never happened', async () => {
     const ledger = await funded();
     const req = withdrawal();
-    await requestWithdrawal(ledger, req, await sign(req));
+    await requestWithdrawal(ledger, req, await sign(req), NOW);
     await abandonWithdrawal(ledger, req, 'broadcast failed');
     expect(await ledger.balance(userAccount(req.userId, 'USDC'))).toBe(1_000_000_000n);
   });
