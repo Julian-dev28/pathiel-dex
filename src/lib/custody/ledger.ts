@@ -1,0 +1,237 @@
+/**
+ * The ledger: who owns what, and why.
+ *
+ * Holding other people's money makes this the product and the router a
+ * component of it. Everything downstream — a deposit, a fill, a withdrawal —
+ * is an accounting event before it is anything else, and the failure that
+ * matters in a custodial system is not a bad swap. It is the ledger and the
+ * chain quietly disagreeing: a deposit credited twice, a withdrawal that
+ * debited and never sent, a fill attributed to the wrong account. Those do not
+ * announce themselves. They surface weeks later as a shortfall.
+ *
+ * So the design is double entry, and balances are **derived** rather than
+ * stored:
+ *
+ *   - Every movement is a transfer between two accounts, written as two
+ *     entries that sum to zero. There is no way to create value by writing a
+ *     single row, which is the whole point — a credit to a user is always a
+ *     debit of the pool that backs it.
+ *   - Entries are immutable. A mistake is corrected by a reversing entry, not
+ *     by an edit, so the history remains the explanation of the balance.
+ *   - A balance is the sum of that account's entries. It cannot drift from its
+ *     entries, because it is not a separate number that could.
+ *
+ * What that buys is a solvency check that means something: sum every user
+ * balance, compare against what the pooled wallets actually hold on chain, and
+ * a discrepancy is arithmetic rather than an opinion. See `reconcile.ts`.
+ *
+ * Amounts are integer minor units of the asset (USDC to six places, and so on)
+ * held as bigint. Floating point has no place in a ledger; a tenth of a cent
+ * lost per trade to binary rounding is both a real loss and an unprovable one.
+ */
+
+/** Which pot an entry moves value into or out of. */
+export type AccountKind =
+  /** A customer's claim on the pool. The sum of these is what is owed. */
+  | 'user'
+  /** Funds the venue holds on chain, per chain and asset. */
+  | 'pool'
+  /** Fees earned, taken out of a trade rather than conjured. */
+  | 'revenue'
+  /**
+   * The counterparty for value entering or leaving the system entirely: a
+   * deposit arriving from outside, a withdrawal leaving. Its balance is the
+   * negative of everything the venue has ever taken in, which is a useful
+   * check in itself.
+   */
+  | 'external';
+
+/**
+ * An account is a kind plus a subject: a user id, a chain, a venue.
+ *
+ * Flat strings rather than a nested structure because this is a key, and a key
+ * that can be compared, indexed and summed by a database is worth more than
+ * one that reads nicely in TypeScript.
+ */
+export type AccountId = string;
+
+export const userAccount = (userId: string, asset: string): AccountId =>
+  `user:${userId}:${asset}`;
+export const poolAccount = (chain: string, asset: string): AccountId => `pool:${chain}:${asset}`;
+export const revenueAccount = (asset: string): AccountId => `revenue:${asset}`;
+export const externalAccount = (asset: string): AccountId => `external:${asset}`;
+
+export const accountKind = (id: AccountId): AccountKind => id.split(':')[0] as AccountKind;
+export const accountAsset = (id: AccountId): string => id.split(':').at(-1) ?? '';
+
+/** Why value moved. Enough to explain any balance without reading code. */
+export type EntryReason =
+  | 'deposit'
+  | 'withdrawal'
+  | 'trade'
+  | 'fee'
+  | 'transfer'
+  | 'correction';
+
+/**
+ * One side of a movement.
+ *
+ * `amount` is signed: positive credits the account, negative debits it. The
+ * two sides of a transfer carry the same `transferId`, and their amounts sum
+ * to zero.
+ */
+export type Entry = {
+  id: string;
+  transferId: string;
+  account: AccountId;
+  asset: string;
+  amount: bigint;
+  reason: EntryReason;
+  /**
+   * What in the outside world this corresponds to — a transaction hash, an
+   * exchange order id. The handle a reconciliation uses to ask "did this
+   * actually happen", and what makes a replayed deposit detectable.
+   */
+  reference?: string;
+  at: number;
+};
+
+/** A movement of value between exactly two accounts. */
+export type Transfer = {
+  id: string;
+  from: AccountId;
+  to: AccountId;
+  asset: string;
+  /** Always positive; direction is carried by `from` and `to`. */
+  amount: bigint;
+  reason: EntryReason;
+  reference?: string;
+  at: number;
+};
+
+export class LedgerError extends Error {}
+
+/**
+ * Turn a transfer into the two entries that record it.
+ *
+ * Every rule that protects the ledger lives here, because this is the only
+ * way entries are made. A caller cannot write a single-sided entry, a negative
+ * amount, or a transfer from an account to itself, because there is no path
+ * that would let it.
+ */
+export function entriesFor(transfer: Transfer): [Entry, Entry] {
+  const { id, from, to, asset, amount, reason, reference, at } = transfer;
+  if (amount <= 0n) {
+    throw new LedgerError(`transfer ${id}: amount must be positive, got ${amount}`);
+  }
+  if (from === to) {
+    throw new LedgerError(`transfer ${id}: from and to are the same account (${from})`);
+  }
+  // An asset mismatch would let a dollar be credited as a share. The accounts
+  // carry their asset in the key precisely so this is checkable.
+  for (const account of [from, to]) {
+    if (accountAsset(account) !== asset) {
+      throw new LedgerError(`transfer ${id}: account ${account} does not hold ${asset}`);
+    }
+  }
+  return [
+    { id: `${id}:from`, transferId: id, account: from, asset, amount: -amount, reason, reference, at },
+    { id: `${id}:to`, transferId: id, account: to, asset, amount, reason, reference, at },
+  ];
+}
+
+/** The balance of one account: the sum of its entries, and nothing else. */
+export function balanceOf(entries: Entry[], account: AccountId): bigint {
+  return entries.reduce((sum, e) => (e.account === account ? sum + e.amount : sum), 0n);
+}
+
+/** Every account's balance in one pass, for a reconciliation or a report. */
+export function balances(entries: Entry[]): Map<AccountId, bigint> {
+  const out = new Map<AccountId, bigint>();
+  for (const e of entries) out.set(e.account, (out.get(e.account) ?? 0n) + e.amount);
+  return out;
+}
+
+/**
+ * Does the whole ledger still sum to zero, per asset?
+ *
+ * It must, by construction — every entry has a counterpart. A non-zero total
+ * means entries were written by something other than `entriesFor`, or that
+ * some were lost. Either is a reason to stop rather than to carry on serving
+ * balances nobody can justify.
+ */
+export function isBalanced(entries: Entry[]): boolean {
+  const perAsset = new Map<string, bigint>();
+  for (const e of entries) perAsset.set(e.asset, (perAsset.get(e.asset) ?? 0n) + e.amount);
+  return [...perAsset.values()].every((total) => total === 0n);
+}
+
+/** What the venue owes its customers in one asset. */
+export function totalOwed(entries: Entry[], asset: string): bigint {
+  return entries.reduce(
+    (sum, e) => (e.asset === asset && accountKind(e.account) === 'user' ? sum + e.amount : sum),
+    0n,
+  );
+}
+
+/**
+ * Where a ledger is kept.
+ *
+ * An interface because the domain rules above are worth testing without a
+ * database, and because the one guarantee the storage must provide —
+ * `append` is atomic across both entries, or neither is written — is a
+ * property of the store rather than of this file. A ledger that can write one
+ * side of a transfer and fail on the other is not a ledger.
+ */
+export interface LedgerStore {
+  /**
+   * Write both entries of a transfer, atomically.
+   *
+   * Rejects a `reference` already recorded for the same reason, which is what
+   * makes crediting a deposit idempotent: the chain watcher can see the same
+   * transaction twice, and the second attempt must not create money.
+   */
+  append(transfer: Transfer): Promise<[Entry, Entry]>;
+  balance(account: AccountId): Promise<bigint>;
+  entriesFor(account: AccountId, limit?: number): Promise<Entry[]>;
+  /** Every entry for an asset, for reconciliation and solvency checks. */
+  allEntries(asset?: string): Promise<Entry[]>;
+}
+
+/**
+ * An in-memory store.
+ *
+ * For tests and for local development, not for holding anyone's money: it
+ * forgets everything when the process ends. It exists so the rules above can
+ * be exercised exhaustively without Postgres, and so a caller written against
+ * the interface is proven to work before the real store is wired in.
+ */
+export class MemoryLedger implements LedgerStore {
+  private entries: Entry[] = [];
+  private seenReferences = new Set<string>();
+
+  async append(transfer: Transfer): Promise<[Entry, Entry]> {
+    const key = transfer.reference ? `${transfer.reason}:${transfer.reference}` : null;
+    if (key && this.seenReferences.has(key)) {
+      throw new LedgerError(
+        `transfer ${transfer.id}: ${transfer.reason} ${transfer.reference} is already recorded`,
+      );
+    }
+    const pair = entriesFor(transfer);
+    this.entries.push(...pair);
+    if (key) this.seenReferences.add(key);
+    return pair;
+  }
+
+  async balance(account: AccountId): Promise<bigint> {
+    return balanceOf(this.entries, account);
+  }
+
+  async entriesFor(account: AccountId, limit = 100): Promise<Entry[]> {
+    return this.entries.filter((e) => e.account === account).slice(-limit).reverse();
+  }
+
+  async allEntries(asset?: string): Promise<Entry[]> {
+    return asset ? this.entries.filter((e) => e.asset === asset) : [...this.entries];
+  }
+}
