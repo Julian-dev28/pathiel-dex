@@ -39,6 +39,10 @@ import { toBase, fromBase, jsonSafe } from './format';
 import { buildSwap, approvalTx, approvalLabel, pendingApprovals, minOut, ERC20 } from './execute';
 import { QUOTE_TTL_MS } from './serve';
 import { solveQuote, type Solved } from './solve';
+import { unifiedAssets } from './assets';
+import { planBuy, edgeOverNextBps } from './unified';
+import { fetchPerpMarkets, perpRows, STOCK_PERP_DEX } from './perps';
+import { fetchAccount } from './balances';
 
 /** Same threshold the trade page asks a person to acknowledge. */
 const HIGH_IMPACT_BPS = -300;
@@ -292,6 +296,131 @@ export function registerTools(server: McpServer, account?: PrivateKeyAccount) {
     },
   );
 
+  server.registerTool(
+    'list_assets',
+    {
+      title: 'List assets',
+      description:
+        'Every asset this router trades, with the chains that list it. An asset is one thing listed in several places: NVDA on Robinhood Chain, NVDAc on Base and wNVDAx on X Layer are the same company, and the perp on Hyperliquid is the same underlying again. Use these canonical symbols with plan_buy and get_perps; use list_tokens for the per-chain symbol a swap needs.',
+      inputSchema: z.object({}),
+    },
+    async () =>
+      text(
+        unifiedAssets().map((a) => ({
+          asset: a.symbol,
+          chains: a.listings.map((l) => `${l.chain}:${l.token.symbol}`),
+        })),
+      ),
+  );
+
+  server.registerTool(
+    'plan_buy',
+    {
+      title: 'Plan a purchase across chains',
+      description:
+        'Where to buy an asset, given where the money is. Prices every chain that lists it end to end — the bridge crossing and the swap together — and ranks by units received, which is what ends up in the wallet once the crossing has taken its cut. Use it before build_swap when the user holds dollars on one chain and the asset trades on several. Returns a comparison only: crossing is a bridge deposit the user signs, and nothing here sends anything.',
+      inputSchema: z.object({
+        asset: z.string().describe('Canonical asset symbol, as list_assets gives it (e.g. NVDA)'),
+        from: z
+          .enum(chainKeys)
+          .default(DEFAULT_CHAIN)
+          .describe('The chain the dollars are on now; that chain needs no crossing'),
+        usd: z.number().positive().default(1000).describe('Dollars to spend'),
+        wallet: z
+          .string()
+          .optional()
+          .describe('Optional address the bridge quotes for; quotes do not depend on who is asking'),
+      }),
+    },
+    async ({ asset, from, usd, wallet }) => {
+      try {
+        const plans = await planBuy({
+          wallet: (wallet as Address) ?? '0x0000000000000000000000000000000000000001',
+          asset,
+          fromChain: from,
+          usdAmount: usd,
+        });
+        const best = plans.find((p) => !p.unavailable);
+        return text({
+          asset: asset.toUpperCase(),
+          holding: `${usd} on ${from}`,
+          best: best ? `${best.chain} — ${best.unitsOut} ${asset.toUpperCase()}` : null,
+          edgeOverNextBps: edgeOverNextBps(plans),
+          plans: plans.map((p) => ({
+            chain: p.chain,
+            receive: p.unavailable ? null : p.unitsOut,
+            allInPriceUsd: p.unavailable ? null : p.effectivePriceUsd,
+            crossing: p.bridge ? `${p.bridge.costBps.toFixed(0)}bp, ~${p.bridge.etaSeconds}s` : 'none',
+            venue: p.venue || null,
+            unavailable: p.unavailable ?? null,
+          })),
+          note: 'Gas is not netted out: three chains price it in three tokens, two of which are not the dollar being spent.',
+        });
+      } catch (e) {
+        return fail(firstLine(e));
+      }
+    },
+  );
+
+  server.registerTool(
+    'get_perps',
+    {
+      title: 'Get perp markets',
+      description:
+        'The perpetual side of the same assets, from Hyperliquid. The stock perps live in a builder-deployed HIP-3 dex called "xyz" — a separate namespace from Hyperliquid\'s core universe — and a handful of core crypto majors are carried alongside. Returns the oracle mark, annualised funding, open interest and max leverage, and where the asset also has a pool on the chosen chain, the spot price and the basis between them. Read-only.',
+      inputSchema: z.object({
+        ...chainArg,
+        asset: z.string().optional().describe('Canonical symbol to filter to (e.g. NVDA); omit for all'),
+      }),
+    },
+    async ({ chain: chainKey, asset }) => {
+      try {
+        const markets = await fetchPerpMarkets();
+        const wanted = asset?.toUpperCase();
+        const rows = perpRows(
+          wanted ? markets.filter((m) => m.symbol === wanted) : markets,
+          new Map(),
+        );
+        if (rows.length === 0) return fail(`no perp market for ${asset}`);
+        return text({
+          chain: chainByKey(chainKey).name,
+          stockDex: STOCK_PERP_DEX,
+          markets: rows.map((r) => ({
+            asset: r.symbol,
+            venue: r.dex === STOCK_PERP_DEX ? 'Hyperliquid xyz (stocks)' : 'Hyperliquid core',
+            markUsd: r.markUsd,
+            fundingAnnualPct: r.fundingAnnual * 100,
+            openInterestUsd: Math.round(r.openInterestUsd),
+            maxLeverage: r.maxLeverage,
+          })),
+          note: 'The mark is an oracle run by the HIP-3 dex deployer, who also sets that market\'s parameters — not a price read from a pool.',
+        });
+      } catch (e) {
+        return fail(firstLine(e));
+      }
+    },
+  );
+
+  server.registerTool(
+    'get_account',
+    {
+      title: 'Get unified account',
+      description:
+        'Everything one address holds: spot balances on all three chains grouped by asset, and its Hyperliquid perp margin for both the core universe and the stock dex. Read-only — three eth_calls and one public API request, nothing signed.',
+      inputSchema: z.object({
+        address: z.string().describe('The address to read'),
+      }),
+    },
+    async ({ address }) => {
+      if (!isAddress(address)) return fail(`not an address: ${address}`);
+      try {
+        return text(await fetchAccount(address));
+      } catch (e) {
+        return fail(firstLine(e));
+      }
+    },
+  );
+
   if (!account) return;
 
   // ── signing tools: local server only ──────────────────────────────────
@@ -415,4 +544,5 @@ export function registerTools(server: McpServer, account?: PrivateKeyAccount) {
       }
     },
   );
+
 }
