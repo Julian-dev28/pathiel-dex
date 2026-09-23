@@ -60,15 +60,22 @@ export type WithdrawalRequest = {
   destination: Address;
   /** Which chain pays it. */
   venue: string;
-  nonce: string;
   issuedAt: number;
   /**
    * Required above the travel-rule threshold. Absent below it, rather than
    * collected regardless — data not held cannot leak.
    */
   beneficiary?: { name: string; reference?: string };
-  /** The venue's own valuation at request time, for the threshold test. */
-  valueSgd?: number;
+  /**
+   * The venue's valuation of this withdrawal, in SGD.
+   *
+   * Required, and supplied by the caller that priced it — never by the
+   * customer. Optional, it was the compliance control in this file defaulting
+   * to "exempt": omit the field and every withdrawal fell below the MAS
+   * threshold. It is not in the signed message for the same reason; the
+   * customer authorises the amount and the destination, the venue values it.
+   */
+  valueSgd: number;
 };
 
 export class WithdrawalError extends Error {}
@@ -94,7 +101,6 @@ export function withdrawalMessage(req: WithdrawalRequest): string {
     // it, the same signature could be submitted under any number of new ids,
     // each reserving the amount again — one authorisation, several payments.
     `Request: ${req.id}`,
-    `Nonce: ${req.nonce}`,
     `Issued At: ${new Date(req.issuedAt).toISOString()}`,
     '',
     'This moves funds out of your account and cannot be reversed.',
@@ -121,6 +127,9 @@ export async function verifyWithdrawal(
   if (req.issuedAt - now > 60_000) {
     throw new WithdrawalError('this authorisation is dated in the future');
   }
+  if (!Number.isFinite(req.valueSgd) || req.valueSgd < 0) {
+    throw new WithdrawalError('a withdrawal must be valued before it can be authorised');
+  }
   if (needsTravelRuleData(req) && !req.beneficiary?.name) {
     throw new WithdrawalError(
       `withdrawals valued over SGD ${TRAVEL_RULE_THRESHOLD_SGD} require beneficiary information`,
@@ -135,7 +144,7 @@ export async function verifyWithdrawal(
 }
 
 export const needsTravelRuleData = (req: WithdrawalRequest): boolean =>
-  (req.valueSgd ?? 0) >= TRAVEL_RULE_THRESHOLD_SGD;
+  req.valueSgd >= TRAVEL_RULE_THRESHOLD_SGD;
 
 /**
  * Hold the money aside, once the payment is authorised.

@@ -35,6 +35,16 @@ import type { LedgerStore } from './ledger';
 export const RETENTION_YEARS = 5;
 
 export type Snapshot = {
+  /**
+   * Position in the record, starting at zero and never skipping.
+   *
+   * The hash chain alone proves a snapshot was not edited in place; it says
+   * nothing about one removed from the end. Dropping a bad day and everything
+   * after it leaves a chain that verifies perfectly — which is precisely the
+   * edit an operator hiding a shortfall would make. A contiguous sequence
+   * makes a missing tail a gap rather than an ending.
+   */
+  sequence: number;
   /** Sortable and unique per run: the moment it was taken. */
   at: number;
   /** What every asset looked like. */
@@ -59,6 +69,7 @@ export type Snapshot = {
  */
 export function snapshotHash(s: Omit<Snapshot, 'hash'>): string {
   const canonical = JSON.stringify({
+    sequence: s.sequence,
     at: s.at,
     previousHash: s.previousHash,
     entryCount: s.entryCount,
@@ -95,7 +106,13 @@ export async function takeSnapshot(
 ): Promise<Snapshot> {
   const assets = await reconcile(store, holdings);
   const entryCount = (await store.allEntries()).length;
+  // Time can repeat or go backwards across a clock change; the sequence
+  // cannot, which is what makes "is one missing" answerable.
+  if (previous && now < previous.at) {
+    throw new Error('a snapshot cannot be older than the one before it');
+  }
   const body: Omit<Snapshot, 'hash'> = {
+    sequence: previous ? previous.sequence + 1 : 0,
     at: now,
     assets,
     holdings,
@@ -113,13 +130,48 @@ export async function takeSnapshot(
  * makes retention meaningful: without it, five years of records prove only
  * that someone could write five years of records.
  */
-export function verifyChain(snapshots: Snapshot[]): { ok: boolean; brokenAt?: number } {
+export function verifyChain(
+  snapshots: Snapshot[],
+  /**
+   * The sequence the record is expected to reach.
+   *
+   * Without it, a truncated history is indistinguishable from a shorter one:
+   * the chain verifies and the missing days simply are not there. Held apart
+   * from the snapshots themselves — in a deployment that means somewhere the
+   * process writing them cannot rewrite, which is the whole point.
+   */
+  expectedLast?: number,
+): { ok: boolean; brokenAt?: number; why?: string } {
   let previousHash: string | null = null;
+  let expectedSequence = 0;
+  let previousAt = -Infinity;
+
   for (const s of snapshots) {
     const { hash, ...body } = s;
-    if (s.previousHash !== previousHash) return { ok: false, brokenAt: s.at };
-    if (snapshotHash(body) !== hash) return { ok: false, brokenAt: s.at };
+    if (s.sequence !== expectedSequence) {
+      return { ok: false, brokenAt: s.at, why: `expected sequence ${expectedSequence}, found ${s.sequence}` };
+    }
+    if (s.at < previousAt) {
+      return { ok: false, brokenAt: s.at, why: 'a snapshot is dated before the one preceding it' };
+    }
+    if (s.previousHash !== previousHash) {
+      return { ok: false, brokenAt: s.at, why: 'does not follow the snapshot before it' };
+    }
+    if (snapshotHash(body) !== hash) {
+      return { ok: false, brokenAt: s.at, why: 'contents do not match the hash recorded for them' };
+    }
     previousHash = hash;
+    previousAt = s.at;
+    expectedSequence += 1;
+  }
+
+  // The record ends earlier than it should: days were removed from the end,
+  // which a hash chain on its own cannot see.
+  if (expectedLast !== undefined && expectedSequence - 1 !== expectedLast) {
+    return {
+      ok: false,
+      why: `record ends at ${expectedSequence - 1}, expected ${expectedLast}`,
+    };
   }
   return { ok: true };
 }

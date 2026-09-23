@@ -37,6 +37,25 @@ import {
 /** Where the money is, or is going: a chain this venue settles on. */
 export type Venue = string;
 
+/**
+ * The identity of a deposit.
+ *
+ * Everything that makes this transfer the transfer it is — chain, transaction,
+ * sender, recipient, amount — and last an occurrence, to tell apart two
+ * otherwise identical transfers inside one transaction. Nothing here is a
+ * position in a block, so a re-mine that renumbers logs produces the same
+ * reference and the ledger refuses it as the replay it is.
+ */
+export const depositReference = (d: {
+  venue: Venue;
+  txHash: string;
+  from: string;
+  userId: string;
+  amount: bigint;
+  occurrence: number;
+}): string =>
+  `${d.venue}:${d.txHash}:${d.from.toLowerCase()}:${d.userId.toLowerCase()}:${d.amount}:${d.occurrence}`;
+
 const transferId = (prefix: string): string =>
   `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
 
@@ -57,19 +76,21 @@ export async function creditDeposit(
     venue: Venue;
     txHash: string;
     /**
-     * Which transfer within the transaction this is.
+     * Which of several identical transfers in this transaction this is.
      *
-     * A transaction hash does not identify a deposit. One batch payout — an
-     * exchange sweep, a disperse contract — emits a transfer per recipient in
-     * a single transaction, so keying on the hash alone credits the first
-     * recipient and refuses every other as a replay. That loses money in the
-     * direction nobody notices, because each customer's deposit simply never
-     * arrives.
+     * Not a log index. `logIndex` is a position in the *block*, so a re-mine —
+     * or two RPC nodes that disagree about ordering, which needs no reorg at
+     * all — renumbers the same transfer and it credits a second time. An
+     * occurrence counts only among transfers sharing this transaction, sender,
+     * recipient and amount, so it survives renumbering and still separates the
+     * rare token that emits the same movement twice.
      */
-    logIndex: number;
+    occurrence: number;
+    /** Who sent it. Part of the identity, so a renumbered log is still the same deposit. */
+    from: string;
   },
 ): Promise<void> {
-  const { userId, asset, amount, venue, txHash, logIndex } = args;
+  const { userId, asset, amount, venue, txHash, occurrence, from } = args;
   if (amount <= 0n) throw new LedgerError(`deposit ${txHash}: amount must be positive`);
   await store.append({
     id: transferId('dep'),
@@ -80,7 +101,10 @@ export async function creditDeposit(
     asset,
     amount,
     reason: 'deposit',
-    reference: `${venue}:${txHash}#${logIndex}`,
+    // Names the transfer rather than its position: the same movement seen
+    // again after a re-mine produces the same reference and is refused, while
+    // two genuinely different transfers in one transaction still differ.
+    reference: depositReference({ venue, txHash, from, userId, amount, occurrence }),
     at: Date.now(),
   });
 }
@@ -93,7 +117,10 @@ export async function creditDeposit(
  * a reserved balance is simply not in the user's account any more.
  */
 export const withdrawalHold = (userId: string, asset: string): AccountId =>
-  `user:${userId}#hold:${asset}`;
+  // Built through userAccount so the same normalisation and the same refusal
+  // of separators apply: a hold that disagreed with its account about casing
+  // would reserve money the customer could never get back.
+  `${userAccount(userId, asset).replace(/:[^:]+$/, '')}#hold:${asset}`;
 
 export async function reserveWithdrawal(
   store: LedgerStore,
@@ -123,7 +150,16 @@ export async function settleWithdrawal(
   store: LedgerStore,
   args: { userId: string; asset: string; amount: bigint; requestId: string; txHash: string },
 ): Promise<void> {
-  const { userId, asset, amount, requestId, txHash } = args;
+  const { userId, asset, amount, requestId } = args;
+  // Whatever is still held for this request. Settling less than was reserved
+  // stranded the remainder forever: owed to the customer, unreachable by them,
+  // and counted by reconciliation as an obligation being met.
+  const held = await store.balance(withdrawalHold(userId, asset));
+  if (amount !== held) {
+    throw new LedgerError(
+      `withdrawal ${requestId}: settling ${amount} against ${held} reserved would strand the difference`,
+    );
+  }
   await store.append({
     id: transferId('wd'),
     from: withdrawalHold(userId, asset),
@@ -131,7 +167,10 @@ export async function settleWithdrawal(
     asset,
     amount,
     reason: 'withdrawal',
-    reference: `settle:${requestId}:${txHash}`,
+    // Keyed by request, not by transaction: two broadcasts of one withdrawal
+    // that both land are one settlement, and a hash in the reference would
+    // make them two.
+    reference: `settle:${requestId}`,
     at: Date.now(),
   });
 }
@@ -155,7 +194,9 @@ export async function releaseWithdrawal(
     asset,
     amount,
     reason: 'correction',
-    reference: `release:${requestId}:${why}`,
+    // The request, not the explanation: two operators writing two different
+    // notes about one failed payment must not release the money twice.
+    reference: `release:${requestId}`,
     at: Date.now(),
   });
 }

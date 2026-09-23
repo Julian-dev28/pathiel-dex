@@ -94,7 +94,7 @@ describe.each([
       amount: 1_000_000_000n, // $1,000
       venue: 'base',
       txHash: '0xdep1',
-      logIndex: 0,
+      occurrence: 0, from: '0xsender',
     });
     return ledger;
   };
@@ -115,7 +115,7 @@ describe.each([
         amount: 1_000_000_000n,
         venue: 'base',
         txHash: '0xdep1',
-        logIndex: 0,
+        occurrence: 0, from: '0xsender',
       }),
     ).rejects.toThrow(/already recorded/);
     expect(await ledger.balance(userAccount('alice', 'USDC'))).toBe(1_000_000_000n);
@@ -129,7 +129,7 @@ describe.each([
       amount: 5n,
       venue: 'xlayer',
       txHash: '0xdep1',
-      logIndex: 0,
+      occurrence: 0, from: '0xsender',
     });
     expect(await ledger.balance(userAccount('alice', 'USDC'))).toBe(1_000_000_005n);
   });
@@ -187,7 +187,7 @@ describe.each([
       amount: 7n,
       venue: 'base',
       txHash: '0xdep2',
-      logIndex: 0,
+      occurrence: 0, from: '0xsender',
     });
     const entries = await ledger.entriesFor(userAccount('alice', 'USDC'));
     expect(entries.map((e) => e.amount)).toEqual([7n, 1_000_000_000n]);
@@ -207,7 +207,7 @@ describe.each([
       amount: 100_000_000n,
       venue: 'base',
       txHash: '0xb1',
-      logIndex: 0,
+      occurrence: 0, from: '0xsender',
     });
     return ledger;
   };
@@ -297,7 +297,7 @@ describe.each([
       amount: 1_000_000_000n,
       venue: 'base',
       txHash: '0xa',
-      logIndex: 0,
+      occurrence: 0, from: '0xsender',
     });
     await creditDeposit(ledger, {
       userId: 'bob',
@@ -305,7 +305,7 @@ describe.each([
       amount: 500_000_000n,
       venue: 'base',
       txHash: '0xb',
-      logIndex: 0,
+      occurrence: 0, from: '0xsender',
     });
     return ledger;
   };
@@ -454,7 +454,7 @@ describe('what only a database can get wrong', () => {
       amount: 100_000_000n,
       venue: 'base',
       txHash: '0xfund',
-      logIndex: 0,
+      occurrence: 0, from: '0xsender',
     });
 
     // Both read a sufficient balance before either writes — the race the
@@ -482,7 +482,7 @@ describe('what only a database can get wrong', () => {
       amount: 1_000n,
       venue: 'base',
       txHash: '0xfund',
-      logIndex: 0,
+      occurrence: 0, from: '0xsender',
     });
 
     // Straight at the store this time, so nothing but the store's own guard
@@ -514,7 +514,7 @@ describe('what only a database can get wrong', () => {
       amount: 1_000n,
       venue: 'base',
       txHash: '0xa',
-      logIndex: 0,
+      occurrence: 0, from: '0xsender',
     });
     await expect(db.query('UPDATE ledger_entries SET amount = 0')).rejects.toThrow(/append-only/);
     await expect(db.query('DELETE FROM ledger_entries')).rejects.toThrow(/append-only/);

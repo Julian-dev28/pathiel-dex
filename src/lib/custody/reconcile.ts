@@ -53,6 +53,32 @@ export type AssetReconciliation = {
    * unhedged trade look like a solvency event.
    */
   inventory: bigint;
+  /**
+   * What the venue has ever taken in, less what it has paid out.
+   *
+   * An independent statement of the same fact, and the reason this report can
+   * detect anything at all. Because the books sum to zero, owed + revenue +
+   * inventory is identically −external, so comparing the wallets against that
+   * sum compares them against nothing but themselves — a half-applied trade
+   * that moved value from a customer to the pool passes it without a murmur.
+   * Checking `held` against net flows *and* against what customers are owed
+   * gives two different ways to be wrong.
+   */
+  netDeposited: bigint;
+  /**
+   * The venue is holding a position of its own in this asset.
+   *
+   * Between a fill and its hedge that is ordinary. Persisting, it is not: an
+   * unhedged position is the venue carrying market risk against customer
+   * money, and a large one usually means a hedge that never executed. Reported
+   * rather than judged, because how long is too long is an operator's policy
+   * and not this function's to decide.
+   *
+   * Deliberately not a "the books do not add up" check: owed + revenue +
+   * inventory is identically −external for a ledger that sums to zero, so such
+   * a check could never fail and would be reassurance rather than evidence.
+   */
+  unhedged: boolean;
 };
 
 /**
@@ -71,13 +97,16 @@ export function reconcileAsset(
   let owed = 0n;
   let revenue = 0n;
   let inventory = 0n;
+  let external = 0n;
   for (const e of entries) {
     if (e.asset !== asset) continue;
     // `user:<id>:<asset>` and `user:<id>#hold:<asset>` are both obligations.
     if (accountKind(e.account) === 'user') owed += e.amount;
     if (accountKind(e.account) === 'revenue') revenue += e.amount;
     if (accountKind(e.account) === 'pool') inventory += e.amount;
+    if (accountKind(e.account) === 'external') external += e.amount;
   }
+  const netDeposited = -external;
   const held = holdings
     .filter((h) => h.asset === asset)
     .reduce((sum, h) => sum + h.amount, 0n);
@@ -87,7 +116,10 @@ export function reconcileAsset(
   // own fees as a surplus and eventually as an excuse for a shortfall; one
   // that forgot the last would see a solvency event every time a fill waited
   // on its hedge.
-  const difference = held - owed - revenue - inventory;
+  const difference = held - netDeposited;
+
+  const unhedged = inventory !== 0n;
+
   return {
     asset,
     owed,
@@ -95,6 +127,8 @@ export function reconcileAsset(
     difference,
     revenue,
     inventory,
+    netDeposited,
+    unhedged,
     status: difference === 0n ? 'balanced' : difference < 0n ? 'shortfall' : 'surplus',
   };
 }
@@ -123,8 +157,20 @@ export async function reconcile(
 export const isSolvent = (report: AssetReconciliation[]): boolean =>
   report.every((r) => r.status !== 'shortfall');
 
+/**
+ * Is the venue carrying no position of its own?
+ *
+ * Solvency says the wallets cover what is owed. This says the venue is not
+ * also holding market risk against that money — which after a hedge has run
+ * it should not be.
+ */
+export const isFlat = (report: AssetReconciliation[]): boolean =>
+  report.every((r) => !r.unhedged);
+
 /** One line per asset, for an operator or an alert. */
 export const describe = (r: AssetReconciliation): string =>
   r.status === 'balanced'
-    ? `${r.asset}: balanced at ${r.owed} owed`
+    ? r.unhedged
+      ? `${r.asset}: balanced at ${r.owed} owed, with an unhedged position of ${r.inventory}`
+      : `${r.asset}: balanced at ${r.owed} owed`
     : `${r.asset}: ${r.status} of ${r.difference < 0n ? -r.difference : r.difference} — owed ${r.owed}, held ${r.held}, revenue ${r.revenue}, inventory ${r.inventory}`;

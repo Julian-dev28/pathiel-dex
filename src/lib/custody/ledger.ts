@@ -55,8 +55,29 @@ export type AccountKind =
  */
 export type AccountId = string;
 
+/**
+ * Account ids are built by concatenation, so the parts must not contain the
+ * separators.
+ *
+ * Two failures, both silent. A userId containing `#hold` produces the same id
+ * as another customer's reserved funds. And an address in two different cases
+ * is two different accounts: deposits credited to one, withdrawals attempted
+ * from the other, reconciliation reporting balanced while the money sits
+ * somewhere the customer cannot reach.
+ */
+function part(value: string, what: string): string {
+  if (value.includes(':') || value.includes('#')) {
+    throw new LedgerError(`${what} may not contain ':' or '#': ${value}`);
+  }
+  return value;
+}
+
+/** Addresses are compared case-insensitively; everything else is taken as given. */
+const normaliseUser = (userId: string): string =>
+  /^0x[0-9a-fA-F]{40}$/.test(userId) ? userId.toLowerCase() : userId;
+
 export const userAccount = (userId: string, asset: string): AccountId =>
-  `user:${userId}:${asset}`;
+  `user:${normaliseUser(part(userId, 'userId'))}:${part(asset, 'asset')}`;
 export const poolAccount = (chain: string, asset: string): AccountId => `pool:${chain}:${asset}`;
 export const revenueAccount = (asset: string): AccountId => `revenue:${asset}`;
 export const externalAccount = (asset: string): AccountId => `external:${asset}`;

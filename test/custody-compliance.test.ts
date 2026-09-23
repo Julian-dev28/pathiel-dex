@@ -29,7 +29,7 @@ const booked = async () => {
     asset: 'USDC',
     amount: 1_000_000_000n,
     venue: 'base',
-    txHash: '0xa', logIndex: 0,
+    txHash: '0xa', occurrence: 0, from: '0xsender',
   });
   return ledger;
 };
@@ -131,5 +131,81 @@ describe('retention', () => {
     const now = 10 * 365 * DAY;
     expect(withinRetention(now - 4 * 365 * DAY, now)).toBe(true);
     expect(withinRetention(now - (RETENTION_YEARS + 1) * 365 * DAY, now)).toBe(false);
+  });
+});
+
+/**
+ * Regressions for the audit's finding on the audit record itself.
+ *
+ * The previous tests covered an edit in the middle of a chain someone already
+ * held a copy of. That is not the forgery an operator hiding a bad day would
+ * commit: they would drop the day and everything after it, or re-derive the
+ * whole history with laundered numbers. Both used to verify as `ok`.
+ */
+describe('forgeries the chain used to accept', () => {
+  const fiveDays = async (): Promise<Snapshot[]> => {
+    const ledger = await booked();
+    const out: Snapshot[] = [];
+    let previous: Snapshot | null = null;
+    for (let day = 1; day <= 5; day++) {
+      // Days four and five are short: the record has something to hide.
+      const holdings = held(day >= 4 ? 900_000_000n : 1_000_000_000n);
+      previous = await takeSnapshot(ledger, holdings, previous, day * DAY);
+      out.push(previous);
+    }
+    return out;
+  };
+
+  it('accepts the genuine record when it is complete', async () => {
+    const record = await fiveDays();
+    expect(verifyChain(record, 4)).toEqual({ ok: true });
+    expect(record.filter((s) => !s.solvent).map((s) => s.sequence)).toEqual([3, 4]);
+  });
+
+  it('detects the insolvent tail being cut off', async () => {
+    // The whole point: without the expected length, a truncated record and a
+    // shorter one are the same thing.
+    const record = await fiveDays();
+    const truncated = record.slice(0, 3);
+    expect(verifyChain(truncated, 4).ok).toBe(false);
+    expect(verifyChain(truncated, 4).why).toMatch(/ends at 2, expected 4/);
+  });
+
+  it('detects a history re-derived from laundered numbers', async () => {
+    // Re-deriving produces an internally consistent chain; what it cannot
+    // produce is the sequence the outside world already recorded.
+    const clean = new MemoryLedger();
+    await creditDeposit(clean, {
+      userId: 'alice',
+      asset: 'USDC',
+      amount: 1_000_000_000n,
+      venue: 'base',
+      txHash: '0xa',
+      occurrence: 0,
+      from: '0xsender',
+    });
+    let previous: Snapshot | null = null;
+    const forged: Snapshot[] = [];
+    for (let day = 1; day <= 3; day++) {
+      previous = await takeSnapshot(clean, held(1_000_000_000n), previous, day * DAY);
+      forged.push(previous);
+    }
+    expect(forged.every((s) => s.solvent)).toBe(true);
+    expect(verifyChain(forged, 4).ok).toBe(false);
+  });
+
+  it('detects a snapshot whose sequence was renumbered', async () => {
+    const record = await fiveDays();
+    const renumbered = [...record];
+    renumbered[2] = { ...renumbered[2], sequence: 99 };
+    expect(verifyChain(renumbered).ok).toBe(false);
+  });
+
+  it('refuses to take a snapshot dated before the one before it', async () => {
+    const ledger = await booked();
+    const first = await takeSnapshot(ledger, held(1_000_000_000n), null, 2 * DAY);
+    await expect(takeSnapshot(ledger, held(1_000_000_000n), first, DAY)).rejects.toThrow(
+      /cannot be older/,
+    );
   });
 });

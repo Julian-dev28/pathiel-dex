@@ -216,6 +216,10 @@ export async function scanChain(args: {
       return report;
     }
 
+    // Counts identical transfers within this scan, so the occurrence that
+    // names a deposit does not depend on where the log sat in its block.
+    const seen = new Map<string, number>();
+
     for (const log of logs) {
       const token = listed.get(log.address.toLowerCase());
       const userId = log.args.to ? watched.get(log.args.to.toLowerCase()) : undefined;
@@ -241,12 +245,12 @@ export async function scanChain(args: {
           asset: token.symbol,
           amount: value,
           venue: chain.key,
-          // The hash alone is not the identity of a deposit — one batch payout
-          // carries a Transfer per recipient — so the log index goes with it.
-          // creditDeposit composes the reference; passing a pre-joined string
-          // would put the format in two places.
+          // creditDeposit composes the reference from these: the transfer's
+          // own identity, so a re-mine that renumbers logs is still refused
+          // as the replay it is.
           txHash: transactionHash,
-          logIndex,
+          occurrence: occurrenceOf(transactionHash, log.args.from ?? '', userId, value, seen),
+          from: log.args.from ?? '',
         });
         report.credited.push({
           chain: chain.key,
@@ -317,5 +321,27 @@ function ranges(chain: ChainConfig, from: bigint, to: bigint): [bigint, bigint][
  * forever while deposits went uncredited.
  */
 const isReplay = (err: unknown): boolean => err instanceof DuplicateReference;
+
+/**
+ * How many identical transfers this transaction has already produced.
+ *
+ * Identical means same transaction, sender, recipient and amount — the tuple
+ * that names a movement. A token emitting one movement as two events gets 0
+ * and 1; a batch payout to different customers gets 0 each, because the
+ * recipients differ. Counted within a scan, which is all that is needed: the
+ * ledger refuses anything already recorded from a previous one.
+ */
+function occurrenceOf(
+  txHash: string,
+  from: string,
+  userId: string,
+  amount: bigint,
+  seen: Map<string, number>,
+): number {
+  const key = `${txHash}:${from.toLowerCase()}:${userId.toLowerCase()}:${amount}`;
+  const n = seen.get(key) ?? 0;
+  seen.set(key, n + 1);
+  return n;
+}
 
 const reason = (err: unknown): string => (err instanceof Error ? err.message : String(err));
