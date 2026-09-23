@@ -1,5 +1,45 @@
 # Custody
 
+> **NOT IN USE, AND NOT SAFE TO WIRE UP.**
+>
+> The product moved to a non-custodial model (`src/lib/account/`): the customer
+> derives their own account from a signature and the venue never holds their
+> funds. Nothing outside this directory imports anything in it.
+>
+> An adversarial audit of this code then found defects that must be fixed
+> before a single real deposit reaches it. The worst is not an attack — it is
+> ordinary operation:
+>
+> - **`recordTrade` is not atomic.** It makes three separate `append` calls in
+>   three transactions. A failure on the second or third — an ordinary fee
+>   calculation against a balance the trade just emptied, or one dropped
+>   connection — leaves the first committed, throws an error saying nothing
+>   happened, poisons the retry (the reference is already recorded), and leaves
+>   the customer's money gone. Reconciliation reports `balanced` and `solvent`
+>   throughout.
+> - **The double-spend guard depends on an isolation level nothing sets.** The
+>   design is correct only at READ COMMITTED; `BEGIN` is issued bare. One
+>   managed-Postgres default turns the in-transaction re-check into a no-op,
+>   and no test catches it because PGlite is single-connection.
+> - **Reconciliation cannot detect value moving between the venue and its
+>   customers.** The expression reduces to `held − net deposits`, so a
+>   half-applied trade, an operational wallet counted as customer funds, and a
+>   balance owed on a chain holding nothing all read as `balanced`.
+> - **A reorg or a disagreeing RPC re-keys a deposit and credits it twice.**
+>   `logIndex` is a position in the block, not in the transaction, and it is
+>   the sole idempotency key.
+> - **`verifyChain` does not prevent what it claims.** Truncating the tail or
+>   re-deriving the whole history both verify as `ok`.
+> - **The two stores are not interchangeable.** `MemoryLedger` has no balance
+>   guard, so it will mint money in local development while Postgres refuses.
+>
+> The full audit, with runnable reproductions, is in the conversation that
+> produced this line. Read it before reviving any of this.
+
+---
+
+# Custody (design notes)
+
 This directory holds other people's money. Everything in it is written on that
 assumption, and the rules below are the reason each file looks the way it does.
 
