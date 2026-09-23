@@ -61,11 +61,22 @@ export function actionHash(
   return keccak256(concatHex(parts));
 }
 
-const splitSignature = (sig: Hex): Signature => ({
-  r: `0x${sig.slice(2, 66)}`,
-  s: `0x${sig.slice(66, 130)}`,
-  v: parseInt(sig.slice(130, 132), 16),
-});
+/**
+ * A 65-byte signature as r, s and v.
+ *
+ * `v` is normalised to 27/28. viem and the Python SDK already produce those,
+ * but a wallet is not obliged to: some connectors hand back the raw recovery
+ * id, 0 or 1, and Hyperliquid rejects such a signature as simply not matching
+ * the account — no hint that one byte was in the other convention.
+ */
+export const splitSignature = (sig: Hex): Signature => {
+  const v = parseInt(sig.slice(130, 132), 16);
+  return {
+    r: `0x${sig.slice(2, 66)}`,
+    s: `0x${sig.slice(66, 130)}`,
+    v: v < 27 ? v + 27 : v,
+  };
+};
 
 export type L1SignOpts = {
   vaultAddress?: Address | null;
@@ -73,14 +84,19 @@ export type L1SignOpts = {
   isMainnet?: boolean;
 };
 
-/** Sign an L1 action. The key may be an agent (API) wallet's. */
-export async function signL1Action(
-  privateKey: Hex,
+/**
+ * The phantom agent, built but not signed.
+ *
+ * Split out from `signL1Action` because a browser wallet holds its own key: it
+ * takes this payload and hands back a signature. Both paths sign these exact
+ * bytes, and `test/perp-browser.test.ts` holds them to it.
+ */
+export function l1Payload(
   action: unknown,
   nonce: number,
   { vaultAddress = null, expiresAfter = null, isMainnet = true }: L1SignOpts = {},
-): Promise<Signature> {
-  const sig = await privateKeyToAccount(privateKey).signTypedData({
+) {
+  return {
     domain: { name: 'Exchange', version: '1', chainId: 1337, verifyingContract: ZERO_CONTRACT },
     // viem derives the EIP712Domain type from the fields present, in the
     // canonical order, so declaring it here as the SDK's payload does would
@@ -91,12 +107,22 @@ export async function signL1Action(
         { name: 'connectionId', type: 'bytes32' },
       ],
     },
-    primaryType: 'Agent',
+    primaryType: 'Agent' as const,
     message: {
       source: isMainnet ? 'a' : 'b',
       connectionId: actionHash(action, vaultAddress, nonce, expiresAfter),
     },
-  });
+  };
+}
+
+/** Sign an L1 action. The key may be an agent (API) wallet's. */
+export async function signL1Action(
+  privateKey: Hex,
+  action: unknown,
+  nonce: number,
+  opts: L1SignOpts = {},
+): Promise<Signature> {
+  const sig = await privateKeyToAccount(privateKey).signTypedData(l1Payload(action, nonce, opts));
   return splitSignature(sig);
 }
 

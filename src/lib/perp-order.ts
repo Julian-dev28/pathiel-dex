@@ -96,14 +96,15 @@ async function l1Request(
 }
 
 /**
- * One order, signed and ready, sent nowhere.
+ * The order action, unsigned.
  *
  * Field order in the action is not cosmetic: it is msgpack'd in this order to
  * produce the hash that gets signed, so a reordering here silently invalidates
- * every signature.
+ * every signature. Shared with `perp-browser.ts` so that a wallet-signed order
+ * and a key-signed one are the same bytes rather than two copies of them.
  */
-export async function buildOrder(agentKey: Hex, o: OrderInput, opts: L1Opts = {}): Promise<ExchangeRequest> {
-  const action = {
+export function orderAction(o: OrderInput): Record<string, unknown> {
+  return {
     type: 'order',
     orders: [
       {
@@ -119,7 +120,11 @@ export async function buildOrder(agentKey: Hex, o: OrderInput, opts: L1Opts = {}
     grouping: 'na',
     ...(o.builder ? { builder: { b: o.builder.address.toLowerCase(), f: o.builder.feeTenthsBps } } : {}),
   };
-  return l1Request(agentKey, action, opts);
+}
+
+/** One order, signed and ready, sent nowhere. */
+export async function buildOrder(agentKey: Hex, o: OrderInput, opts: L1Opts = {}): Promise<ExchangeRequest> {
+  return l1Request(agentKey, orderAction(o), opts);
 }
 
 /**

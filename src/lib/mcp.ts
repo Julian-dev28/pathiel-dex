@@ -606,7 +606,7 @@ export function registerTools(server: McpServer, account?: PrivateKeyAccount, pe
         markUsd: live.markUsd,
         priceUsd: price,
         notionalUsd: size * price,
-        orderType: args.limitPrice ? 'limit (Gtc)' : 'market (Ioc through the book)',
+        orderType: args.limitPrice ? 'limit (Gtc)' : 'market (IOC through the book)',
         maxLeverage: market.maxLeverage,
         collateral: 'USDC in the ' + (market.dex || 'core') + ' margin account',
       },

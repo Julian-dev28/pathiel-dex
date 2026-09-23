@@ -1,0 +1,135 @@
+/**
+ * The same perp order, signed by the wallet in the browser instead of by a key.
+ *
+ * `perp-order.ts` signs with a raw private key, which is right for the local
+ * MCP server and impossible in a page: the key belongs to the wallet and never
+ * leaves it. So the split here is not build-then-send but build-then-sign-then-
+ * send — `prepareOrder` returns the EIP-712 payload to hand to wagmi's
+ * `useSignTypedData`, and `finalize` turns the signature it gives back into the
+ * request the exchange takes.
+ *
+ * Two properties are worth stating because they are what this module is for:
+ *
+ *   1. **It is the same bytes.** The action comes from `orderAction` and the
+ *      payload from `l1Payload`, both shared with the key path, so a browser
+ *      order and an MCP order of the same intent are byte-identical.
+ *      `test/perp-browser.test.ts` signs one both ways and compares; if that
+ *      ever fails, the UI is producing orders the exchange will reject.
+ *   2. **Nothing here holds key material, and nothing is delegated.** An order
+ *      signed by the connected wallet is an ordinary L1 action — there is no
+ *      agent wallet in this path, and a session key in a browser is not
+ *      something this module offers.
+ */
+
+import { l1Payload, splitSignature } from './hl-sign';
+import {
+  marketPrice,
+  orderAction,
+  resolveMarket,
+  sendExchange,
+  type ExchangeRequest,
+} from './perp-order';
+import { fetchPerpMarkets } from './perps';
+
+/** The whole contract lives here; a caller need not know where the type does. */
+export type { ExchangeRequest };
+
+/** How far through the book a market order reaches, when nothing says. */
+const DEFAULT_SLIPPAGE_BPS = 50;
+
+export type PerpOrderIntent = {
+  /** Canonical symbol, e.g. 'NVDA'. */
+  asset: string;
+  side: 'buy' | 'sell';
+  /** Notional before leverage. */
+  usd: number;
+  /** Omit for a market order (IOC through the book). */
+  limitPrice?: number;
+  reduceOnly?: boolean;
+  /** Market orders only; defaults to 50. */
+  slippageBps?: number;
+};
+
+export type PreparedOrder = {
+  /** What the order does, in the terms a person can check it in. */
+  summary: {
+    market: string;
+    assetId: number;
+    side: 'buy' | 'sell';
+    size: number;
+    markUsd: number;
+    priceUsd: number;
+    notionalUsd: number;
+    orderType: string;
+    maxLeverage: number;
+  };
+  /** Pass straight to wagmi's `useSignTypedData`. */
+  typedData: {
+    domain: Record<string, unknown>;
+    types: Record<string, unknown>;
+    primaryType: string;
+    message: Record<string, unknown>;
+  };
+  /** The wallet's 65-byte signature, split into the r/s/v the exchange wants. */
+  finalize: (signature: `0x${string}`) => ExchangeRequest;
+};
+
+/**
+ * Price and size an intent, and return it ready to sign.
+ *
+ * The nonce is fixed here rather than at signing time: it is part of the hash
+ * inside `typedData`, so the request `finalize` builds has to carry the same
+ * one. A prepared order left sitting is therefore stale — prepare again rather
+ * than signing an old one.
+ */
+export async function prepareOrder(intent: PerpOrderIntent): Promise<PreparedOrder> {
+  const market = await resolveMarket(intent.asset);
+  if (!market) throw new Error(`no perp market for ${intent.asset}`);
+
+  const [live] = (await fetchPerpMarkets()).filter((m) => m.symbol === market.symbol);
+  if (!live) throw new Error(`no mark price for ${intent.asset}`);
+
+  const isBuy = intent.side === 'buy';
+  const slippage = (intent.slippageBps ?? DEFAULT_SLIPPAGE_BPS) / 10_000;
+  const price = intent.limitPrice ?? marketPrice(live.markUsd, isBuy, slippage, market.szDecimals);
+  const size = Number((intent.usd / live.markUsd).toFixed(market.szDecimals));
+  if (size <= 0) throw new Error(`${intent.usd} USD is below one tick of ${market.symbol}`);
+
+  const action = orderAction({
+    asset: market.assetId,
+    isBuy,
+    size,
+    price,
+    reduceOnly: intent.reduceOnly ?? false,
+    tif: intent.limitPrice ? 'Gtc' : 'Ioc',
+  });
+  const nonce = Date.now();
+
+  return {
+    summary: {
+      market: `${market.dex || 'core'}:${market.symbol}`,
+      assetId: market.assetId,
+      side: intent.side,
+      size,
+      markUsd: live.markUsd,
+      priceUsd: price,
+      notionalUsd: size * price,
+      orderType: intent.limitPrice ? 'limit (Gtc)' : 'market (IOC through the book)',
+      maxLeverage: market.maxLeverage,
+    },
+    typedData: l1Payload(action, nonce),
+    finalize: (signature) => ({ action, nonce, signature: splitSignature(signature) }),
+  };
+}
+
+/**
+ * Send a signed order to Hyperliquid, straight from the browser.
+ *
+ * There is deliberately no server route in front of this. Hyperliquid answers
+ * `/exchange` with `access-control-allow-origin: *`, so the order can go from
+ * the user's wallet to the venue without this app's server in the path: a
+ * server that never sees an order cannot delay it, reorder it or log it.
+ */
+export async function submitOrder(req: ExchangeRequest): Promise<unknown> {
+  return sendExchange(req);
+}
