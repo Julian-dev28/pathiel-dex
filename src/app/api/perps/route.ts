@@ -5,10 +5,15 @@
  * unit costs right now in this router's pools on one chain.
  *
  * The two prices are not the same kind of fact and the response keeps them
- * apart. `spotUsd` is read from pool state over public RPC — the pool is the
- * price. `markUsd` is an oracle run by the HIP-3 dex's deployer, who also sets
- * that market's parameters. `basisBps` needs both, so it is null whenever the
- * asset has no listing on the chain being asked about.
+ * apart. `spotBuyUsd` is what buying NOTIONAL dollars of the token actually
+ * returns from this router's pools — an executable price, inclusive of the
+ * venue fee and the slippage at that size, not a pool mid. `markUsd` is an
+ * oracle run by the HIP-3 dex's deployer, who also sets that market's
+ * parameters. `vsSpotBuyBps` needs both, so it is null whenever the asset has
+ * no listing on the chain being asked about.
+ *
+ * Calling the difference a basis would be wrong by roughly a fee tier, which
+ * on a 0.30% pool is larger than the premium itself — see `perpVsBuyBps`.
  *
  * Quoting spot means a discovery pass and a ladder of multicalls per asset, so
  * the whole response is cached per chain. A minute is long next to a block and
@@ -26,7 +31,14 @@ import { TtlCache } from '@/lib/serve';
 export const revalidate = 0;
 export const dynamic = 'force-dynamic';
 
-/** A trade big enough to be past the dust, small enough to price at the touch. */
+/**
+ * The size the comparison is drawn at.
+ *
+ * It has to be stated, because the answer depends on it: a bigger trade walks
+ * further up the book and makes spot look worse against the perp. A thousand
+ * dollars is a real trade on these pools rather than a dust probe that would
+ * flatter them.
+ */
 const NOTIONAL = 1_000;
 
 const perpCache = new TtlCache<unknown>(60_000);

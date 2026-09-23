@@ -47,14 +47,14 @@ export function PerpsView() {
     };
   }, [chain.key]);
 
-  const priced = data ? data.rows.filter((r) => r.spotUsd !== null).length : 0;
+  const priced = data ? data.rows.filter((r) => r.spotBuyUsd !== null).length : 0;
   const pickedRow = data?.rows.find((r) => marketKey(r) === picked) ?? null;
 
   return (
     <>
       <PageHead
         title="Perps"
-        lede={`Every asset below is listed twice — as a pool on ${chain.name} and as a perpetual on Hyperliquid. The gap between the two is the basis.`}
+        lede={`Every asset below is listed twice — as a pool on ${chain.name} and as a perpetual on Hyperliquid. The gap between the two is what buying outright costs against what the perp marks.`}
       />
 
       {error && (
@@ -96,8 +96,8 @@ export function PerpsView() {
                   <tr>
                     <th>Asset</th>
                     <th className="num">Perp mark</th>
-                    <th className="num">Spot on {chain.name}</th>
-                    <th className="num">Basis</th>
+                    <th className="num">Buy on {chain.name}</th>
+                    <th className="num">Perp vs buy</th>
                     <th className="num">Funding / yr</th>
                     <th className="num">Open interest</th>
                     <th className="num">Max leverage</th>
@@ -119,9 +119,9 @@ export function PerpsView() {
                         {marketKey(r) === picked && <Chip tone="good">ticket</Chip>}
                       </td>
                       <td className="num mono">{usd(r.markUsd)}</td>
-                      <td className="num mono">{r.spotUsd === null ? '—' : usd(r.spotUsd)}</td>
-                      <td className={`num mono ${r.basisBps === null ? 'mut' : r.basisBps >= 0 ? 'up' : 'dn'}`}>
-                        {r.basisBps === null ? '—' : bps(r.basisBps)}
+                      <td className="num mono">{r.spotBuyUsd === null ? '—' : usd(r.spotBuyUsd)}</td>
+                      <td className={`num mono ${r.vsSpotBuyBps === null ? 'mut' : r.vsSpotBuyBps >= 0 ? 'up' : 'dn'}`}>
+                        {r.vsSpotBuyBps === null ? '—' : bps(r.vsSpotBuyBps)}
                       </td>
                       <td className={`num mono ${r.fundingAnnual >= 0 ? 'up' : 'dn'}`}>
                         {pct(r.fundingAnnual * 100)}
@@ -137,9 +137,12 @@ export function PerpsView() {
 
           <Reveal summary="Are these two prices the same kind of fact?">
             <p>
-              <strong>No, and the difference matters more than the basis does.</strong> The spot
-              column is read from pool state over public RPC: the pool <em>is</em> the price, and
-              anyone can re-read the same contracts and get the same number. The perp mark is an
+              <strong>No, and the difference matters more than the gap does.</strong> The buy
+              column is what this router&rsquo;s pools would actually return for the trade named
+              below — an executable price over public RPC, fee and price impact included, which
+              anyone can re-quote against the same contracts. It is not a mid, so the gap beside it
+              is not a funding basis: at a 0.30% fee tier the cost of trading alone is thirty basis
+              points, more than the premium being measured. The perp mark is an
               oracle published by the deployer of the HIP-3 dex the market lives on — marked{' '}
               <Chip tone="accent">xyz</Chip> above — who also sets that market&rsquo;s leverage,
               margin and funding parameters. That is a third party&rsquo;s number about an
@@ -148,15 +151,15 @@ export function PerpsView() {
             </p>
             <p>
               <strong>Funding is quoted per hour</strong> by the API and annualised exactly once
-              here (×24×365) for the column above. A basis that looks enormous beside a spot price
+              here (×24×365) for the column above. A number that looks enormous beside a spot price
               is usually a funding rate someone annualised twice.
             </p>
             <p>
               <strong>An em dash is an absence, not a zero.</strong> An asset with no listing on{' '}
-              {chain.name} has no spot price here and therefore no basis — switching the chain in
-              the masthead re-quotes the column against a different set of pools. Spot is quoted by
-              selling $1,000 of {chain.usd.symbol} into the asset, so it carries that trade&rsquo;s
-              price impact rather than being a mid.
+              {chain.name} has no buy price here and nothing to compare the mark against —
+              switching the chain in the masthead re-quotes the column against a different set of
+              pools. The price is quoted by selling $1,000 of {chain.usd.symbol} into the asset, so
+              a larger trade would walk further up the book and read worse.
             </p>
             <p>
               Every read in this table is public and unauthenticated on both sides. The ticket

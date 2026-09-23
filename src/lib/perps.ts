@@ -135,24 +135,30 @@ export async function fetchUniverse(dex: string): Promise<UniverseEntry[]> {
 export const annualisedFunding = (m: PerpMarket): number => m.fundingHourly * 24 * 365;
 
 /**
- * The perp's premium over spot, in basis points.
+ * The perp mark against what buying the token actually costs, in basis points.
  *
- * Positive means the perp is dearer than the pool — longs are paying up for
- * leverage, and the carry trade is to buy the token and short the perp. The
- * number is only as good as both sides being the same asset, which is what the
- * canonical symbol is for.
+ * Deliberately not called a basis. A basis compares two mids; the spot side
+ * here is an executable price — what a real buy of a stated size returns from
+ * the pools, inclusive of the venue's fee and its slippage. Against a 0.30%
+ * tier that is thirty basis points of cost sitting inside the comparison,
+ * which is larger than the premium being measured and would flip its sign
+ * while looking perfectly smooth.
+ *
+ * So: positive means the perp is dearer than buying the token outright, fees
+ * and all — which is the question a trader choosing between the two actually
+ * has. It is not a funding-arbitrage basis and must not be presented as one.
  */
-export function basisBps(markUsd: number, spotUsd: number): number {
-  if (spotUsd <= 0) return 0;
-  return ((markUsd - spotUsd) / spotUsd) * 10_000;
+export function perpVsBuyBps(markUsd: number, spotBuyUsd: number): number {
+  if (spotBuyUsd <= 0) return 0;
+  return ((markUsd - spotBuyUsd) / spotBuyUsd) * 10_000;
 }
 
 /** A market with the spot side of the same asset on one chain, ready to show. */
 export type PerpRow = PerpMarket & {
   /** What one unit costs on the selected chain, or null if it is not listed there. */
-  spotUsd: number | null;
+  spotBuyUsd: number | null;
   /** Null, not zero, when there is no spot price to compare the mark against. */
-  basisBps: number | null;
+  vsSpotBuyBps: number | null;
   fundingAnnual: number;
 };
 
@@ -169,11 +175,11 @@ export function perpRows(markets: PerpMarket[], spot: Map<string, number>): Perp
   return [...markets]
     .sort((a, b) => stockFirst(a) - stockFirst(b) || b.openInterestUsd - a.openInterestUsd)
     .map((m) => {
-      const spotUsd = spot.get(m.symbol) ?? null;
+      const spotBuyUsd = spot.get(m.symbol) ?? null;
       return {
         ...m,
-        spotUsd,
-        basisBps: spotUsd === null ? null : basisBps(m.markUsd, spotUsd),
+        spotBuyUsd,
+        vsSpotBuyBps: spotBuyUsd === null ? null : perpVsBuyBps(m.markUsd, spotBuyUsd),
         fundingAnnual: annualisedFunding(m),
       };
     });

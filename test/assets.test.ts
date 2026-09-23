@@ -10,7 +10,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { canonical, unifiedAssets, listingOn } from '@/lib/assets';
-import { parseMarkets, basisBps, annualisedFunding, type PerpMarket } from '@/lib/perps';
+import { parseMarkets, perpVsBuyBps, annualisedFunding, type PerpMarket } from '@/lib/perps';
 import { CHAIN_LIST } from '@/lib/chain';
 
 describe('canonical symbols', () => {
@@ -126,7 +126,7 @@ describe('perp market parsing', () => {
   });
 });
 
-describe('basis and funding', () => {
+describe('the perp mark against the cost of buying, and funding', () => {
   const market = (over: Partial<PerpMarket> = {}): PerpMarket => ({
     symbol: 'NVDA',
     dex: 'xyz',
@@ -138,15 +138,18 @@ describe('basis and funding', () => {
     ...over,
   });
 
-  it('prices the perp premium over spot in basis points', () => {
-    // The live pair this was written against: X Layer spot 228.71, perp 228.21.
-    expect(basisBps(228.21, 228.71)).toBeCloseTo(-21.9, 1);
-    expect(basisBps(101, 100)).toBeCloseTo(100, 6);
-    expect(basisBps(100, 100)).toBe(0);
+  it('prices the perp against what buying actually costs, in basis points', () => {
+    // Not a basis: the spot side is an executable price with the venue's fee
+    // inside it, so a negative number here is as likely to be a 0.30% tier as
+    // a real discount. The live pair this was written against: buying NVDA on
+    // X Layer cost 228.71, the perp marked 228.21.
+    expect(perpVsBuyBps(228.21, 228.71)).toBeCloseTo(-21.9, 1);
+    expect(perpVsBuyBps(101, 100)).toBeCloseTo(100, 6);
+    expect(perpVsBuyBps(100, 100)).toBe(0);
   });
 
-  it('does not divide by a spot price it never got', () => {
-    expect(basisBps(228.21, 0)).toBe(0);
+  it('does not divide by a price it never got', () => {
+    expect(perpVsBuyBps(228.21, 0)).toBe(0);
   });
 
   it('annualises the hourly funding rate once', () => {

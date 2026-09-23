@@ -171,10 +171,18 @@ would drift — `src/lib/assets.ts`, with the rules pinned by unit tests, becaus
 folding `USDC` into an asset called `USD` or a staking derivative into `ETH`
 would quote a basis between two different things and do it silently.
 
-**Two numbers of different kinds.** A spot quote here is read from pool state:
-the pool is the price, and the fork tests check it. A perp mark comes from an
-oracle run by the HIP-3 dex's deployer, who also sets that market's parameters.
-That is a third party's number, not a chain's, and it is labelled as one.
+**Two numbers of different kinds.** The spot side is what buying $1,000 of the
+token actually returns from this router's pools — an executable price with the
+venue's fee and that trade's price impact inside it. A perp mark comes from an
+oracle run by the HIP-3 dex's deployer, who also sets that market's parameters:
+a third party's number, not a chain's.
+
+The gap between them is therefore **not a funding basis**, and the code refuses
+to call it one (`perpVsBuyBps`, not `basisBps`). At a 0.30% fee tier the cost of
+trading alone is thirty basis points — larger than the premium being measured,
+and enough to flip its sign while looking perfectly smooth. What it does answer
+is the question a trader actually has: is the perp dearer than buying outright,
+fees and all?
 
 It is also an MCP server — hosted at `https://pathiel-dex.vercel.app/api/mcp`
 for quotes, and locally with your own key for trading from Claude. See [MCP](#mcp).

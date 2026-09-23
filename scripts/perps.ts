@@ -17,7 +17,7 @@ import { formatUnits, parseUnits } from 'viem';
 import { CHAIN_LIST, CHAINS, type ChainKey } from '../src/lib/chain';
 import { quoteLadder, ladder, bestRoute } from '../src/lib/quote';
 import { unifiedAssets, listingOn } from '../src/lib/assets';
-import { fetchPerpMarkets, basisBps, annualisedFunding, STOCK_PERP_DEX } from '../src/lib/perps';
+import { fetchPerpMarkets, perpVsBuyBps, annualisedFunding, STOCK_PERP_DEX } from '../src/lib/perps';
 
 const showAll = process.argv[2] === 'all';
 /** A trade big enough to be past the dust, small enough to price at the touch. */
@@ -57,7 +57,7 @@ async function spotPrice(symbol: string, chain: ChainKey): Promise<number | null
   }
 }
 
-const head = ['asset', 'OI $m', 'perp $', ...CHAIN_LIST.map((c) => c.name), 'basis bp', 'fund %/yr'];
+const head = ['asset', 'OI $m', 'perp $', ...CHAIN_LIST.map((c) => c.name), 'vs buy bp', 'fund %/yr'];
 console.log(
   `${head[0].padEnd(9)}${head[1].padStart(8)}${head[2].padStart(10)}` +
     CHAIN_LIST.map((c) => c.name.padStart(16)).join('') +
@@ -70,7 +70,7 @@ for (const m of rows.slice(0, showAll ? rows.length : 24)) {
   // stocks is whichever of the three actually has the pool.
   const spot = prices.find((p) => p !== null) ?? null;
   const cells = prices.map((p) => (p === null ? '—' : p.toFixed(2)).padStart(16)).join('');
-  const basis = spot === null ? '—' : basisBps(m.markUsd, spot).toFixed(0);
+  const basis = spot === null ? '—' : perpVsBuyBps(m.markUsd, spot).toFixed(0);
   console.log(
     `${m.symbol.padEnd(9)}${(m.openInterestUsd / 1e6).toFixed(0).padStart(8)}` +
       `${m.markUsd.toFixed(2).padStart(10)}${cells}${basis.padStart(10)}` +

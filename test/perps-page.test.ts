@@ -24,14 +24,14 @@ const market = (m: Partial<PerpMarket> & Pick<PerpMarket, 'symbol'>): PerpMarket
 describe('perpRows', () => {
   it('leaves an unlisted asset without a spot price or a basis', () => {
     const [row] = perpRows([market({ symbol: 'SNDK' })], new Map());
-    expect(row.spotUsd).toBeNull();
-    expect(row.basisBps).toBeNull();
+    expect(row.spotBuyUsd).toBeNull();
+    expect(row.vsSpotBuyBps).toBeNull();
   });
 
   it('quotes the basis against the spot price when there is one', () => {
     const [row] = perpRows([market({ symbol: 'NVDA', markUsd: 101 })], new Map([['NVDA', 100]]));
-    expect(row.spotUsd).toBe(100);
-    expect(row.basisBps).toBeCloseTo(100, 6);
+    expect(row.spotBuyUsd).toBe(100);
+    expect(row.vsSpotBuyBps).toBeCloseTo(100, 6);
   });
 
   it('annualises the hourly funding rate exactly once', () => {
