@@ -28,8 +28,10 @@ try {
 
 const raw = process.env.PATHIEL_PRIVATE_KEY?.trim();
 let account: PrivateKeyAccount | undefined;
+// Hyperliquid signs with the raw key, which a PrivateKeyAccount does not give back.
+let key: string | undefined;
 if (raw) {
-  const key = raw.startsWith('0x') ? raw : `0x${raw}`;
+  key = raw.startsWith('0x') ? raw : `0x${raw}`;
   if (!/^0x[0-9a-fA-F]{64}$/.test(key)) {
     console.error('pathiel-dex mcp: PATHIEL_PRIVATE_KEY is not a 32-byte hex key');
     process.exit(1);
@@ -42,6 +44,6 @@ if (raw) {
 
 serveStdio(() => {
   const server = new McpServer({ name: 'pathiel-dex', version: '0.1.0' }, { capabilities: { tools: {} } });
-  registerTools(server, account);
+  registerTools(server, account, key as `0x${string}` | undefined);
   return server;
 });

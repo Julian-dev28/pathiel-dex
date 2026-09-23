@@ -90,9 +90,9 @@ describe('the asset table these rules produce', () => {
 describe('perp market parsing', () => {
   const meta = {
     universe: [
-      { name: 'xyz:NVDA', maxLeverage: 20 },
-      { name: 'xyz:SP500', maxLeverage: 50 },
-      { name: 'xyz:GHOST', maxLeverage: 10 },
+      { name: 'xyz:NVDA', maxLeverage: 20, szDecimals: 3 },
+      { name: 'xyz:SP500', maxLeverage: 50, szDecimals: 2 },
+      { name: 'xyz:GHOST', maxLeverage: 10, szDecimals: 2 },
     ],
   };
   const ctxs = [
@@ -119,7 +119,7 @@ describe('perp market parsing', () => {
 
   it('reads core markets, which carry no prefix', () => {
     const core = parseMarkets(
-      [{ universe: [{ name: 'BTC', maxLeverage: 40 }] }, [{ markPx: '86000' }]],
+      [{ universe: [{ name: 'BTC', maxLeverage: 40, szDecimals: 5 }] }, [{ markPx: '86000' }]],
       '',
     );
     expect(core[0]).toMatchObject({ symbol: 'BTC', dex: '', markUsd: 86000 });

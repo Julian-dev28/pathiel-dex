@@ -43,6 +43,13 @@ import { unifiedAssets } from './assets';
 import { planBuy, edgeOverNextBps } from './unified';
 import { fetchPerpMarkets, perpRows, STOCK_PERP_DEX } from './perps';
 import { fetchAccount } from './balances';
+import {
+  resolveMarket,
+  buildOrder,
+  marketPrice,
+  sendExchange,
+  type ExchangeRequest,
+} from './perp-order';
 
 /** Same threshold the trade page asks a person to acknowledge. */
 const HIGH_IMPACT_BPS = -300;
@@ -207,7 +214,13 @@ async function prepareSwap(args: {
   };
 }
 
-export function registerTools(server: McpServer, account?: PrivateKeyAccount) {
+/**
+ * Hyperliquid signs with a raw key rather than a viem account, and a
+ * PrivateKeyAccount does not surrender the key it was built from. The local
+ * server therefore passes the key alongside the account; the hosted one passes
+ * neither and never reaches the tools below `if (!account) return`.
+ */
+export function registerTools(server: McpServer, account?: PrivateKeyAccount, perpKey?: `0x${string}`) {
   server.registerTool(
     'list_tokens',
     {
@@ -545,4 +558,106 @@ export function registerTools(server: McpServer, account?: PrivateKeyAccount) {
     },
   );
 
+  if (!perpKey) return;
+
+  /**
+   * Size an order from a dollar notional, and price a market order.
+   *
+   * Hyperliquid has no market order type: a market order is an IOC limit
+   * priced through the book, and both the price and the size have to respect
+   * the market's own decimals or the exchange rejects the order outright.
+   */
+  async function perpOrderRequest(args: {
+    asset: string;
+    side: 'buy' | 'sell';
+    usd: number;
+    limitPrice?: number;
+    reduceOnly?: boolean;
+    slippageBps: number;
+  }): Promise<{ request: ExchangeRequest; summary: Record<string, unknown> } | { error: string }> {
+    const market = await resolveMarket(args.asset);
+    if (!market) return { error: `no perp market for ${args.asset}` };
+
+    const [live] = (await fetchPerpMarkets()).filter((m) => m.symbol === market.symbol);
+    if (!live) return { error: `no mark price for ${args.asset}` };
+
+    const isBuy = args.side === 'buy';
+    const price =
+      args.limitPrice ?? marketPrice(live.markUsd, isBuy, args.slippageBps / 10_000, market.szDecimals);
+    const size = Number((args.usd / live.markUsd).toFixed(market.szDecimals));
+    if (size <= 0) return { error: `${args.usd} USD is below one tick of ${market.symbol}` };
+
+    const request = await buildOrder(perpKey!, {
+      asset: market.assetId,
+      isBuy,
+      size,
+      price,
+      reduceOnly: args.reduceOnly ?? false,
+      tif: args.limitPrice ? 'Gtc' : 'Ioc',
+    });
+
+    return {
+      request,
+      summary: {
+        market: `${market.dex || 'core'}:${market.symbol}`,
+        assetId: market.assetId,
+        side: args.side,
+        size,
+        markUsd: live.markUsd,
+        priceUsd: price,
+        notionalUsd: size * price,
+        orderType: args.limitPrice ? 'limit (Gtc)' : 'market (Ioc through the book)',
+        maxLeverage: market.maxLeverage,
+        collateral: 'USDC in the ' + (market.dex || 'core') + ' margin account',
+      },
+    };
+  }
+
+  const perpArgs = {
+    asset: z.string().describe('Canonical asset symbol, e.g. NVDA or BTC'),
+    side: z.enum(['buy', 'sell']).describe('buy is long, sell is short'),
+    usd: z.number().positive().describe('Notional size in dollars, before leverage'),
+    limitPrice: z.number().positive().optional().describe('Omit for a market order (IOC through the book)'),
+    reduceOnly: z.boolean().default(false).describe('Only shrink an existing position'),
+    slippageBps: z.number().min(1).max(1000).default(50).describe('Market orders only: how far through the book'),
+  };
+
+  server.registerTool(
+    'build_perp_order',
+    {
+      title: 'Build a perp order',
+      description:
+        'Sign a Hyperliquid perp order WITHOUT sending it, and show exactly what it would do: market, asset id, size, price, notional. Stock perps trade on the HIP-3 dex "xyz" and settle in USDC held in that dex\'s own margin account — fund it first (a bridge can deliver straight there). Use this to show the user the order before perp_order sends one.',
+      inputSchema: z.object(perpArgs),
+    },
+    async (args) => {
+      try {
+        const r = await perpOrderRequest(args);
+        if ('error' in r) return fail(r.error);
+        return text({ ...r.summary, signed: true, sent: false, request: r.request });
+      } catch (e) {
+        return fail(firstLine(e));
+      }
+    },
+  );
+
+  server.registerTool(
+    'perp_order',
+    {
+      title: 'Place a perp order',
+      description:
+        'PLACES A REAL LEVERAGED ORDER on Hyperliquid with the local key, risking real money. A perp position can be liquidated: the loss is not bounded by the spread the way a swap is. Confirm the size and direction with the user — call build_perp_order first and show them — before calling this. Requires USDC in the margin account of the dex the market belongs to.',
+      inputSchema: z.object(perpArgs),
+    },
+    async (args) => {
+      try {
+        const r = await perpOrderRequest(args);
+        if ('error' in r) return fail(r.error);
+        const response = await sendExchange(r.request);
+        return text({ ...r.summary, sent: true, response });
+      } catch (e) {
+        return fail(`Perp order failed: ${firstLine(e)}`);
+      }
+    },
+  );
 }

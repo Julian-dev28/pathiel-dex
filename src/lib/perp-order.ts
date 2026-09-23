@@ -25,6 +25,7 @@
 
 import { type Address, type Hex } from 'viem';
 import { floatToWire, signL1Action, signUserAction, SIGNATURE_CHAIN_ID, type Signature } from './hl-sign';
+import { fetchUniverse, STOCK_PERP_DEX } from './perps';
 
 const EXCHANGE_URL = 'https://api.hyperliquid.xyz/exchange';
 
@@ -289,6 +290,55 @@ export async function buildAgentSendAsset(
  * the split — looked at. A failed action comes back as HTTP 200 with a status
  * of `err`, so the body is checked rather than the status code.
  */
+/** A market, resolved to everything an order needs to name it. */
+export type MarketRef = {
+  symbol: string;
+  /** '' for Hyperliquid's own universe, otherwise the HIP-3 dex. */
+  dex: string;
+  assetId: number;
+  szDecimals: number;
+  maxLeverage: number;
+};
+
+/**
+ * Find a market by asset symbol, stocks first.
+ *
+ * The asset id is the whole point of this: an index into a universe means
+ * nothing without knowing which universe, and `xyz`'s NVDA and a core market
+ * sharing an index are different instruments. Resolved from the live universe
+ * rather than a table, because a list that grows by one shifts nothing today
+ * and everything tomorrow.
+ */
+export async function resolveMarket(symbol: string): Promise<MarketRef | null> {
+  const wanted = symbol.toUpperCase();
+  const [stocks, core] = await Promise.all([
+    fetchUniverse(STOCK_PERP_DEX),
+    fetchUniverse(''),
+  ]);
+
+  const stockIndex = stocks.findIndex((m) => m.name.toUpperCase() === `${STOCK_PERP_DEX.toUpperCase()}:${wanted}`);
+  if (stockIndex >= 0) {
+    const m = stocks[stockIndex];
+    return {
+      symbol: wanted,
+      dex: STOCK_PERP_DEX,
+      assetId: perpAssetId(STOCK_PERP_DEX_INDEX, stockIndex),
+      szDecimals: m.szDecimals,
+      maxLeverage: m.maxLeverage,
+    };
+  }
+
+  const coreIndex = core.findIndex((m) => m.name.toUpperCase() === wanted);
+  if (coreIndex < 0) return null;
+  return {
+    symbol: wanted,
+    dex: '',
+    assetId: coreIndex,
+    szDecimals: core[coreIndex].szDecimals,
+    maxLeverage: core[coreIndex].maxLeverage,
+  };
+}
+
 export async function sendExchange(req: ExchangeRequest): Promise<unknown> {
   const res = await fetch(EXCHANGE_URL, {
     method: 'POST',

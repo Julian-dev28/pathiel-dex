@@ -54,9 +54,17 @@ export type PerpMarket = {
   maxLeverage: number;
 };
 
+/**
+ * A market as its universe describes it.
+ *
+ * `szDecimals` is needed to price an order: Hyperliquid rejects a price with
+ * more than `6 - szDecimals` decimal places, and it differs per market.
+ */
+export type UniverseEntry = { name: string; maxLeverage: number; szDecimals: number };
+
 /** What the info endpoint returns for a universe and its contexts. */
 type MetaAndCtxs = [
-  { universe: { name: string; maxLeverage: number }[] },
+  { universe: UniverseEntry[] },
   { markPx?: string; funding?: string; openInterest?: string; dayNtlVlm?: string }[],
 ];
 
@@ -110,6 +118,17 @@ export async function fetchPerpMarkets(): Promise<PerpMarket[]> {
   ]);
   const majors = new Set<string>(MAJOR_PERPS);
   return [...stocks, ...core.filter((m) => majors.has(m.symbol))];
+}
+
+/**
+ * One dex's universe, in the order the exchange indexes it.
+ *
+ * The position in this list is half of a market's asset id, so the order is
+ * not incidental and must not be sorted on the way through.
+ */
+export async function fetchUniverse(dex: string): Promise<UniverseEntry[]> {
+  const [meta] = await metaAndCtxs(dex);
+  return meta.universe;
 }
 
 /** Annualised funding, for display. Hyperliquid's rate is per hour. */
