@@ -127,3 +127,35 @@ export function basisBps(markUsd: number, spotUsd: number): number {
   if (spotUsd <= 0) return 0;
   return ((markUsd - spotUsd) / spotUsd) * 10_000;
 }
+
+/** A market with the spot side of the same asset on one chain, ready to show. */
+export type PerpRow = PerpMarket & {
+  /** What one unit costs on the selected chain, or null if it is not listed there. */
+  spotUsd: number | null;
+  /** Null, not zero, when there is no spot price to compare the mark against. */
+  basisBps: number | null;
+  fundingAnnual: number;
+};
+
+/**
+ * The table: stocks first, then the core majors, each block by open interest.
+ *
+ * `spot` is keyed by canonical symbol and holds only the assets this router
+ * lists on the chain being shown. A missing entry stays missing all the way to
+ * the screen — an asset with no pool here has no basis, and quoting one against
+ * a zero would invent a 10,000bp discount out of an absence.
+ */
+export function perpRows(markets: PerpMarket[], spot: Map<string, number>): PerpRow[] {
+  const stockFirst = (m: PerpMarket) => (m.dex === STOCK_PERP_DEX ? 0 : 1);
+  return [...markets]
+    .sort((a, b) => stockFirst(a) - stockFirst(b) || b.openInterestUsd - a.openInterestUsd)
+    .map((m) => {
+      const spotUsd = spot.get(m.symbol) ?? null;
+      return {
+        ...m,
+        spotUsd,
+        basisBps: spotUsd === null ? null : basisBps(m.markUsd, spotUsd),
+        fundingAnnual: annualisedFunding(m),
+      };
+    });
+}
