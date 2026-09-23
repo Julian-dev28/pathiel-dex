@@ -4,12 +4,15 @@ import { useEffect, useState } from 'react';
 import type { PerpRow } from '@/lib/perps';
 import { bps, pct } from '@/lib/format';
 import { useChain } from './ChainProvider';
+import { PerpTicket } from './PerpTicket';
 import { Card, Answer, Answers, Reveal, Chip, Empty, ErrorNote, Loading, PageHead } from './ui';
 
 type Payload = { chain: string; quotedAt: number; stockMarkets: number; rows: PerpRow[] };
 
 const usd = (v: number) => `$${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
 const millions = (v: number) => `$${(v / 1e6).toFixed(1)}m`;
+/** A market is a symbol on a dex: the same ticker on two dexes is two markets. */
+const marketKey = (r: PerpRow) => `${r.dex}:${r.symbol}`;
 
 /**
  * Perps.
@@ -23,6 +26,9 @@ export function PerpsView() {
   const { chain } = useChain();
   const [data, setData] = useState<Payload | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The ticket follows a market, not a row: kept as a key so it survives the
+  // re-quote that a chain switch triggers underneath it.
+  const [picked, setPicked] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -42,6 +48,7 @@ export function PerpsView() {
   }, [chain.key]);
 
   const priced = data ? data.rows.filter((r) => r.spotUsd !== null).length : 0;
+  const pickedRow = data?.rows.find((r) => marketKey(r) === picked) ?? null;
 
   return (
     <>
@@ -98,10 +105,18 @@ export function PerpsView() {
                 </thead>
                 <tbody>
                   {data.rows.map((r) => (
-                    <tr key={`${r.dex}:${r.symbol}`}>
+                    <tr key={marketKey(r)} onClick={() => setPicked(marketKey(r))}>
                       <td className="mono">
-                        {r.symbol}{' '}
+                        <button
+                          className="c-ghost mono"
+                          type="button"
+                          aria-pressed={marketKey(r) === picked}
+                          aria-label={`Open a ticket on ${r.symbol} on ${r.dex || 'core'}`}
+                        >
+                          {r.symbol}
+                        </button>{' '}
                         <Chip tone={r.dex ? 'accent' : 'mut'}>{r.dex || 'core'}</Chip>
+                        {marketKey(r) === picked && <Chip tone="good">ticket</Chip>}
                       </td>
                       <td className="num mono">{usd(r.markUsd)}</td>
                       <td className="num mono">{r.spotUsd === null ? '—' : usd(r.spotUsd)}</td>
@@ -144,12 +159,15 @@ export function PerpsView() {
               price impact rather than being a mid.
             </p>
             <p>
-              Nothing on this page signs or sends anything; every read here is public and
-              unauthenticated on both sides.
+              Every read in this table is public and unauthenticated on both sides. The ticket
+              underneath it is the only thing on this page that signs anything, and it signs
+              nothing until the summary has been reviewed.
             </p>
           </Reveal>
         </Card>
       ) : null}
+
+      {data && <PerpTicket row={pickedRow} />}
     </>
   );
 }
