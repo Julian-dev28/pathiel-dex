@@ -142,9 +142,27 @@ and more open interest than Hyperliquid's own ETH book, and 21 of its markets
 are names this router already lists for spot.
 
 `npm run perps` prints the join: every asset, what it costs on each chain, the
-perp mark, the basis between them, and annualised funding. Spot comes from this
-router's own quote path; nothing about it is signed or sent, and every read is
-public and unauthenticated.
+perp mark, the basis between them, and annualised funding. `/perps` shows the
+same thing in the app. Spot comes from this router's own quote path, and every
+read is public and unauthenticated.
+
+**Trading them is local only.** `build_perp_order` signs an order and shows it;
+`perp_order` sends it. Both live behind the same key boundary as `swap` — the
+hosted MCP server has no key and therefore neither tool. Orders are signed with
+an **agent (API) wallet**, which can trade but cannot withdraw: `withdraw3`,
+`usdSend` and `spotSend` need the master key and are not implemented here at
+all. The one transfer an agent may sign, `agentSendAsset`, takes no destination
+argument — it can only move collateral within the account it belongs to.
+
+The signing is pinned to external vectors from Hyperliquid's own Python SDK
+rather than to this code's output, because a wrong byte in the msgpack action
+hash fails silently with no diagnostic. Asset ids matter as much: a HIP-3
+market is `100000 + dexIndex * 10000 + index`, so `xyz:NVDA` is 110002 and the
+same index in the core universe is a different instrument.
+
+**A perp is not a swap.** A bad route costs basis points; a liquidation costs
+the position. Collateral is USDC in that dex's own margin account, and a bridge
+can deliver it straight there.
 
 An asset is one thing listed in several places, so `NVDA` on Robinhood Chain,
 `NVDAc` on Base, `wNVDAx` on X Layer and `xyz:NVDA` are one row. The canonical
