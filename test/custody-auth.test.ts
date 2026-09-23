@@ -184,7 +184,7 @@ describe('authorising a withdrawal', () => {
       asset: 'USDC',
       amount: 1_000_000_000n,
       venue: 'base',
-      txHash: '0xdep',
+      txHash: '0xdep', logIndex: 0,
     });
     return ledger;
   };

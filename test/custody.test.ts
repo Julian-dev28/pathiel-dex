@@ -79,7 +79,7 @@ describe('a ledger under ordinary use', () => {
       asset: 'USDC',
       amount: 1_000_000_000n, // $1,000
       venue: 'base',
-      txHash: '0xdep1',
+      txHash: '0xdep1', logIndex: 0,
     });
     return ledger;
   };
@@ -101,7 +101,7 @@ describe('a ledger under ordinary use', () => {
         asset: 'USDC',
         amount: 1_000_000_000n,
         venue: 'base',
-        txHash: '0xdep1',
+        txHash: '0xdep1', logIndex: 0,
       }),
     ).rejects.toThrow(/already recorded/);
     expect(await ledger.balance(userAccount('alice', 'USDC'))).toBe(1_000_000_000n);
@@ -116,7 +116,7 @@ describe('a ledger under ordinary use', () => {
       asset: 'USDC',
       amount: 5n,
       venue: 'xlayer',
-      txHash: '0xdep1',
+      txHash: '0xdep1', logIndex: 0,
     });
     expect(await ledger.balance(userAccount('alice', 'USDC'))).toBe(1_000_000_005n);
   });
@@ -176,7 +176,7 @@ describe('withdrawals', () => {
       asset: 'USDC',
       amount: 100_000_000n,
       venue: 'base',
-      txHash: '0xb1',
+      txHash: '0xb1', logIndex: 0,
     });
     return ledger;
   };
@@ -266,14 +266,14 @@ describe('reconciliation', () => {
       asset: 'USDC',
       amount: 1_000_000_000n,
       venue: 'base',
-      txHash: '0xa',
+      txHash: '0xa', logIndex: 0,
     });
     await creditDeposit(ledger, {
       userId: 'bob',
       asset: 'USDC',
       amount: 500_000_000n,
       venue: 'base',
-      txHash: '0xb',
+      txHash: '0xb', logIndex: 0,
     });
     return ledger;
   };

@@ -29,7 +29,7 @@ const booked = async () => {
     asset: 'USDC',
     amount: 1_000_000_000n,
     venue: 'base',
-    txHash: '0xa',
+    txHash: '0xa', logIndex: 0,
   });
   return ledger;
 };

@@ -50,9 +50,26 @@ const transferId = (prefix: string): string =>
  */
 export async function creditDeposit(
   store: LedgerStore,
-  args: { userId: string; asset: string; amount: bigint; venue: Venue; txHash: string },
+  args: {
+    userId: string;
+    asset: string;
+    amount: bigint;
+    venue: Venue;
+    txHash: string;
+    /**
+     * Which transfer within the transaction this is.
+     *
+     * A transaction hash does not identify a deposit. One batch payout — an
+     * exchange sweep, a disperse contract — emits a transfer per recipient in
+     * a single transaction, so keying on the hash alone credits the first
+     * recipient and refuses every other as a replay. That loses money in the
+     * direction nobody notices, because each customer's deposit simply never
+     * arrives.
+     */
+    logIndex: number;
+  },
 ): Promise<void> {
-  const { userId, asset, amount, venue, txHash } = args;
+  const { userId, asset, amount, venue, txHash, logIndex } = args;
   if (amount <= 0n) throw new LedgerError(`deposit ${txHash}: amount must be positive`);
   await store.append({
     id: transferId('dep'),
@@ -63,7 +80,7 @@ export async function creditDeposit(
     asset,
     amount,
     reason: 'deposit',
-    reference: `${venue}:${txHash}`,
+    reference: `${venue}:${txHash}#${logIndex}`,
     at: Date.now(),
   });
 }

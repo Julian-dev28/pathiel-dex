@@ -112,6 +112,26 @@ export type Transfer = {
 export class LedgerError extends Error {}
 
 /**
+ * This movement has already been recorded.
+ *
+ * A distinct type rather than a message, because callers act on it. The
+ * deposit watcher credits unconditionally and treats this as the expected
+ * answer when it sees a transaction twice; anything else is a real failure
+ * that must stop the scan. If the two were told apart by matching words, a
+ * store that phrased its unique-violation differently would turn every
+ * harmless replay into a stuck watcher re-scanning the same range forever
+ * while deposits went uncredited.
+ */
+export class DuplicateReference extends LedgerError {
+  constructor(
+    readonly duplicateReason: EntryReason,
+    readonly reference: string,
+  ) {
+    super(`${duplicateReason} ${reference} is already recorded`);
+  }
+}
+
+/**
  * Turn a transfer into the two entries that record it.
  *
  * Every rule that protects the ledger lives here, because this is the only
@@ -213,9 +233,7 @@ export class MemoryLedger implements LedgerStore {
   async append(transfer: Transfer): Promise<[Entry, Entry]> {
     const key = transfer.reference ? `${transfer.reason}:${transfer.reference}` : null;
     if (key && this.seenReferences.has(key)) {
-      throw new LedgerError(
-        `transfer ${transfer.id}: ${transfer.reason} ${transfer.reference} is already recorded`,
-      );
+      throw new DuplicateReference(transfer.reason, transfer.reference!);
     }
     const pair = entriesFor(transfer);
     this.entries.push(...pair);
