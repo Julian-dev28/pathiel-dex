@@ -235,9 +235,10 @@ export async function GET(req: Request) {
 
     return NextResponse.json(value as object, { headers: { 'cache-control': 'no-store' } });
   } catch (e) {
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : 'venue lookup failed' },
-      { status: 500 },
-    );
+    const message = e instanceof Error ? e.message : 'venue lookup failed';
+    // An unknown chain or token is the caller's mistake. Every other route
+    // here answers that with a 400; this one used to call it a server fault.
+    const bad = message.startsWith('unknown chain') || message.startsWith('unknown token');
+    return NextResponse.json({ error: message }, { status: bad ? 400 : 500 });
   }
 }

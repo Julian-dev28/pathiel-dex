@@ -36,8 +36,14 @@ export async function GET(req: Request) {
 
   if (!asset) return NextResponse.json({ error: 'asset is required' }, { status: 400 });
   if (!isChainKey(from)) return NextResponse.json({ error: `unknown chain: ${from}` }, { status: 400 });
-  if (!Number.isFinite(usd) || usd <= 0) {
-    return NextResponse.json({ error: 'usd must be a positive number' }, { status: 400 });
+  // The upper bound is not arbitrary: JavaScript writes anything at or above
+  // 1e21 in exponential notation, which parseUnits rejects outright — a
+  // caller's mistake that used to surface as a 500 carrying a viem message.
+  if (!Number.isFinite(usd) || usd <= 0 || usd >= 1e21) {
+    return NextResponse.json(
+      { error: 'usd must be a positive number below 1e21' },
+      { status: 400 },
+    );
   }
   if (wallet && !isAddress(wallet)) {
     return NextResponse.json({ error: 'wallet is not an address' }, { status: 400 });

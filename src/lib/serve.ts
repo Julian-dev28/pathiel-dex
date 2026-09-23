@@ -30,7 +30,20 @@ export class TtlCache<T> {
     private maxEntries = 500,
   ) {}
 
-  async get(key: string, produce: () => Promise<T>): Promise<{ value: T; hit: boolean }> {
+  /**
+   * `ttlFor` lets an answer choose how long it deserves to be kept.
+   *
+   * Not every result is worth the same. A quote that came back complete can
+   * sit for the full window; one carrying failures should expire quickly, or a
+   * single cold start serves its own failures to everyone behind it for a
+   * minute — which is exactly how a page came to tell visitors that assets it
+   * trades were not listed.
+   */
+  async get(
+    key: string,
+    produce: () => Promise<T>,
+    ttlFor?: (value: T) => number,
+  ): Promise<{ value: T; hit: boolean }> {
     const now = Date.now();
     const cached = this.store.get(key);
     if (cached && cached.expires > now) return { value: cached.value, hit: true };
@@ -40,7 +53,7 @@ export class TtlCache<T> {
 
     const promise = produce()
       .then((value) => {
-        this.store.set(key, { value, expires: Date.now() + this.ttlMs });
+        this.store.set(key, { value, expires: Date.now() + (ttlFor?.(value) ?? this.ttlMs) });
         this.evict();
         return value;
       })

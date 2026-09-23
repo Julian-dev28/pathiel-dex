@@ -48,13 +48,16 @@ export function PerpsView() {
   }, [chain.key]);
 
   const priced = data ? data.rows.filter((r) => r.spotBuyUsd !== null).length : 0;
+  // Listed here, but the quote did not answer. Counted apart from the absent
+  // ones: the two look identical on screen and mean opposite things.
+  const unavailable = data ? data.rows.filter((r) => r.spotStatus === 'unavailable').length : 0;
   const pickedRow = data?.rows.find((r) => marketKey(r) === picked) ?? null;
 
   return (
     <>
       <PageHead
         title="Perps"
-        lede={`Every asset below is listed twice — as a pool on ${chain.name} and as a perpetual on Hyperliquid. The gap between the two is what buying outright costs against what the perp marks.`}
+        lede={`Stock perps on Hyperliquid, beside what the same asset costs to buy outright wherever this router lists it. Where both sides exist on ${chain.name}, the gap between them is the third column.`}
       />
 
       {error && (
@@ -78,12 +81,17 @@ export function PerpsView() {
               label="Markets shown"
               value={data.rows.length}
               size="xl"
-              note={`${data.stockMarkets} stock perps trade on xyz; the rest of that book has no pool here`}
+              note={`${data.stockMarkets} stock perps trade on xyz; the rest of that book is not listed for spot by this router on any chain`}
             />
             <Answer
               label={`Priced on ${chain.name}`}
               value={priced}
-              note="the others are listed on another chain, or on none"
+              note={
+                unavailable > 0
+                  ? `${unavailable} could not be quoted just now; the rest are listed on another chain, or on none`
+                  : 'the others are listed on another chain, or on none'
+              }
+              tone={unavailable > 0 ? 'warn' : undefined}
             />
           </Answers>
 
@@ -119,7 +127,17 @@ export function PerpsView() {
                         {marketKey(r) === picked && <Chip tone="good">ticket</Chip>}
                       </td>
                       <td className="num mono">{usd(r.markUsd)}</td>
-                      <td className="num mono">{r.spotBuyUsd === null ? '—' : usd(r.spotBuyUsd)}</td>
+                      <td className="num mono">
+                        {r.spotBuyUsd !== null ? (
+                          usd(r.spotBuyUsd)
+                        ) : r.spotStatus === 'unavailable' ? (
+                          // Listed here; the quote did not come back. Saying
+                          // "not listed" would be a claim about the chain.
+                          <span title="listed here, but the quote did not come back">…</span>
+                        ) : (
+                          '—'
+                        )}
+                      </td>
                       <td className={`num mono ${r.vsSpotBuyBps === null ? 'mut' : r.vsSpotBuyBps >= 0 ? 'up' : 'dn'}`}>
                         {r.vsSpotBuyBps === null ? '—' : bps(r.vsSpotBuyBps)}
                       </td>
@@ -155,8 +173,11 @@ export function PerpsView() {
               is usually a funding rate someone annualised twice.
             </p>
             <p>
-              <strong>An em dash is an absence, not a zero.</strong> An asset with no listing on{' '}
-              {chain.name} has no buy price here and nothing to compare the mark against —
+              <strong>An em dash is an absence, a dotted line is a failure.</strong> An em dash
+              means this router lists no pool for the asset on {chain.name}. An ellipsis means it
+              does and the quote did not come back — a cold start, a rate limit — which is not a
+              statement about the chain and clears on a reload. Neither has a buy price to compare
+              the mark against —
               switching the chain in the masthead re-quotes the column against a different set of
               pools. The price is quoted by selling $1,000 of {chain.usd.symbol} into the asset, so
               a larger trade would walk further up the book and read worse.

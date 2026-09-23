@@ -42,9 +42,17 @@ export const dynamic = 'force-dynamic';
 const NOTIONAL = 1_000;
 
 const perpCache = new TtlCache<unknown>(60_000);
+/** A response carrying failed quotes is worth coalescing for seconds, not a minute. */
+const FAILED_TTL_MS = 5_000;
 
 /** What one unit costs on a chain, priced by selling the chain's dollar for it. */
-async function spotPrice(token: Token, chain: ChainConfig): Promise<number | null> {
+/** Null when the asset is its own dollar, `failed` when the quote did not answer. */
+const FAILED = Symbol('quote failed');
+
+async function spotPrice(
+  token: Token,
+  chain: ChainConfig,
+): Promise<number | null | typeof FAILED> {
   if (token.symbol === chain.usd.symbol) return null;
   try {
     const amountIn = parseUnits(String(NOTIONAL), chain.usd.decimals);
@@ -53,7 +61,10 @@ async function spotPrice(token: Token, chain: ChainConfig): Promise<number | nul
     const out = Number(formatUnits(bestRoute(curves, amountIn).single.amountOut, token.decimals));
     return out > 0 ? NOTIONAL / out : null;
   } catch {
-    return null;
+    // Not the same as "no pool here": this router lists the token on this
+    // chain and the quote did not come back. Reported as such rather than as
+    // an absence, and not cached for a minute as though it were settled.
+    return FAILED;
   }
 }
 
@@ -66,7 +77,7 @@ export async function GET(req: Request) {
   }
 
   try {
-    const { value } = await perpCache.get(`perps:${chain.id}`, async () => {
+    const build = async () => {
       const markets = await fetchPerpMarkets();
       const assets = new Map(unifiedAssets().map((a) => [a.symbol, a]));
 
@@ -86,18 +97,25 @@ export async function GET(req: Request) {
       }
       const prices = await Promise.all(tokens.map(([, t]) => spotPrice(t, chain)));
       const spot = new Map<string, number>();
+      const unavailable = new Set<string>();
       tokens.forEach(([symbol], i) => {
         const p = prices[i];
-        if (p !== null) spot.set(symbol, p);
+        if (p === FAILED) unavailable.add(symbol);
+        else if (p !== null) spot.set(symbol, p);
       });
 
       return {
         chain: chain.key,
         quotedAt: Date.now(),
         stockMarkets: markets.filter((m) => m.dex === STOCK_PERP_DEX).length,
-        rows: perpRows(shown, spot),
+        rows: perpRows(shown, spot, unavailable),
+        unavailable: unavailable.size,
       };
-    });
+    };
+
+    const { value } = await perpCache.get(`perps:${chain.id}`, build, (v) =>
+      ((v as { unavailable?: number }).unavailable ?? 0) > 0 ? FAILED_TTL_MS : 60_000,
+    );
 
     return NextResponse.json(value as object, { headers: { 'cache-control': 'no-store' } });
   } catch (e) {

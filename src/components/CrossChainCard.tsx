@@ -96,6 +96,13 @@ export function CrossChainCard({
 
   const best = priced[0];
   const elsewhere = best && best.chain !== chain;
+  // The chain the money is on could not be priced. There is nothing to compare
+  // against, so there is no advice to give: edgeOverStayingBps correctly
+  // returns 0 here, and rendering that as "0.0bp better, stay put" invented a
+  // recommendation out of a missing number — while the quote box directly
+  // above was pricing the very same pair on the very same chain.
+  const herePlan = plans?.find((p) => p.chain === chain);
+  const hereUnpriced = !!herePlan?.unavailable;
 
   return (
     <Card
@@ -144,7 +151,13 @@ export function CrossChainCard({
             </table>
           </div>
 
-          {elsewhere && worthCrossing ? (
+          {hereUnpriced ? (
+            <p className="c-empty" style={{ marginTop: 12 }}>
+              {CHAINS[chain].name} did not price this just now
+              {herePlan?.unavailable ? ` — ${herePlan.unavailable}` : ''}, so there is nothing to
+              compare the others against. The quote above still stands; reload to try again.
+            </p>
+          ) : elsewhere && worthCrossing ? (
             <p style={{ marginTop: 12 }}>
               {/* Measured against staying here, not against the runner-up: the
                   question is whether to move, so the comparison is to not moving. */}

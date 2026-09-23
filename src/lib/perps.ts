@@ -173,6 +173,16 @@ export function perpVsBuyBps(markUsd: number, spotBuyUsd: number): number {
 export type PerpRow = PerpMarket & {
   /** What one unit costs on the selected chain, or null if it is not listed there. */
   spotBuyUsd: number | null;
+  /**
+   * Why there is no price, when there is none.
+   *
+   * `unlisted` means this router has no pool for the asset on this chain.
+   * `unavailable` means it has one and the quote did not come back — a cold
+   * multicall, a rate limit, a timeout. Collapsing the two into null told a
+   * first-time visitor that twenty-two of twenty-three assets were not listed
+   * on a chain that trades all of them.
+   */
+  spotStatus: 'priced' | 'unlisted' | 'unavailable';
   /** Null, not zero, when there is no spot price to compare the mark against. */
   vsSpotBuyBps: number | null;
   fundingAnnual: number;
@@ -186,7 +196,12 @@ export type PerpRow = PerpMarket & {
  * the screen — an asset with no pool here has no basis, and quoting one against
  * a zero would invent a 10,000bp discount out of an absence.
  */
-export function perpRows(markets: PerpMarket[], spot: Map<string, number>): PerpRow[] {
+export function perpRows(
+  markets: PerpMarket[],
+  spot: Map<string, number>,
+  /** Assets this router lists here whose quote failed, as opposed to absent ones. */
+  unavailable: Set<string> = new Set(),
+): PerpRow[] {
   const stockFirst = (m: PerpMarket) => (m.dex === STOCK_PERP_DEX ? 0 : 1);
   return [...markets]
     .sort((a, b) => stockFirst(a) - stockFirst(b) || b.openInterestUsd - a.openInterestUsd)
@@ -195,6 +210,8 @@ export function perpRows(markets: PerpMarket[], spot: Map<string, number>): Perp
       return {
         ...m,
         spotBuyUsd,
+        spotStatus:
+          spotBuyUsd !== null ? 'priced' : unavailable.has(m.symbol) ? 'unavailable' : 'unlisted',
         vsSpotBuyBps: spotBuyUsd === null ? null : perpVsBuyBps(m.markUsd, spotBuyUsd),
         fundingAnnual: annualisedFunding(m),
       };
