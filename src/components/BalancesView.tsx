@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useAccount } from 'wagmi';
-import { CHAINS } from '@/lib/chain';
+import { CHAIN_LIST, CHAINS } from '@/lib/chain';
 import { sig, addr } from '@/lib/format';
 import type { AccountBalances, PerpAccount } from '@/lib/balances';
 import { Card, Answer, Answers, Chip, Empty, ErrorNote, Loading, PageHead, Reveal } from './ui';
@@ -91,6 +91,12 @@ export function BalancesView() {
 function Account({ data }: { data: AccountBalances }) {
   const { assets, native } = data.spot;
   const chainsHeld = new Set(assets.flatMap((a) => a.holdings.map((h) => h.chain))).size;
+  // A chain whose RPC failed holds an unknown amount, not nothing. Counting it
+  // among the chains read would make "on 2 of 3" mean two different things,
+  // which is the exact claim the errors card below exists to prevent.
+  const chainsRead = CHAIN_LIST.filter(
+    (c) => !data.errors.some((e) => e.source === c.key),
+  ).length;
   const marginUsd = data.perps.accounts.reduce((n, a) => n + a.accountValueUsd, 0);
   const openPositions = data.perps.accounts.reduce((n, a) => n + a.positions.length, 0);
 
@@ -102,7 +108,11 @@ function Account({ data }: { data: AccountBalances }) {
             label="Assets held"
             value={assets.length}
             size="xl"
-            note={`on ${chainsHeld} of 3 chain${chainsHeld === 1 ? '' : 's'}`}
+            note={
+              chainsRead === CHAIN_LIST.length
+                ? `on ${chainsHeld} of ${CHAIN_LIST.length} chains`
+                : `on ${chainsHeld} of the ${chainsRead} chains that answered`
+            }
           />
           <Answer
             label="Perp margin"

@@ -75,9 +75,10 @@ type MetaAndCtxs = [
  */
 export function parseMarkets([meta, ctxs]: MetaAndCtxs, dex: string): PerpMarket[] {
   const out: PerpMarket[] = [];
+  if (!Array.isArray(meta?.universe) || !Array.isArray(ctxs)) return out;
   meta.universe.forEach((m, i) => {
     const ctx = ctxs[i];
-    if (!ctx) return;
+    if (!ctx || typeof m?.name !== 'string') return;
     const markUsd = Number(ctx.markPx ?? 0);
     if (!markUsd) return;
     out.push({
@@ -101,7 +102,15 @@ async function metaAndCtxs(dex: string): Promise<MetaAndCtxs> {
     body: JSON.stringify({ type: 'metaAndAssetCtxs', ...(dex ? { dex } : {}) }),
   });
   if (!res.ok) throw new Error(`hyperliquid ${dex || 'core'}: ${res.status}`);
-  return (await res.json()) as MetaAndCtxs;
+  const body = await res.json();
+  // A 200 carrying something other than [meta, contexts] — an error object, an
+  // empty body — would otherwise destructure into "is not iterable" from deep
+  // inside a page render. The sibling reader in balances.ts guards the same
+  // API the same way.
+  if (!Array.isArray(body) || !Array.isArray(body[0]?.universe) || !Array.isArray(body[1])) {
+    throw new Error(`hyperliquid ${dex || 'core'}: unexpected response shape`);
+  }
+  return body as MetaAndCtxs;
 }
 
 /**
@@ -112,12 +121,19 @@ async function metaAndCtxs(dex: string): Promise<MetaAndCtxs> {
  * first. A caller that wants only one of them filters on `dex`.
  */
 export async function fetchPerpMarkets(): Promise<PerpMarket[]> {
-  const [stocks, core] = await Promise.all([
+  // Settled, not all: the core universe contributes five majors and the `xyz`
+  // book is the product. A failure fetching the decoration should not throw
+  // away the equities, and vice versa.
+  const [stocks, core] = await Promise.allSettled([
     metaAndCtxs(STOCK_PERP_DEX).then((d) => parseMarkets(d, STOCK_PERP_DEX)),
     metaAndCtxs('').then((d) => parseMarkets(d, '')),
   ]);
+  if (stocks.status === 'rejected' && core.status === 'rejected') throw stocks.reason;
   const majors = new Set<string>(MAJOR_PERPS);
-  return [...stocks, ...core.filter((m) => majors.has(m.symbol))];
+  return [
+    ...(stocks.status === 'fulfilled' ? stocks.value : []),
+    ...(core.status === 'fulfilled' ? core.value.filter((m) => majors.has(m.symbol)) : []),
+  ];
 }
 
 /**

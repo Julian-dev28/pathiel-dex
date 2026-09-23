@@ -252,12 +252,16 @@ export async function buildApproveBuilderFee(
  * Move USDC between the account's own perp dexes — core margin to the `xyz`
  * stock dex's margin, or back.
  *
- * Note what this function does not take: a destination. The destination *is*
- * `address`, the account whose margin is being moved, and there is no parameter
- * that could ever be something else. That is the whole shape of what an agent
- * key is allowed to do with money — it can fund the margin that backs its own
- * trades, and it cannot pay anybody. A transfer to another address is
- * `usdSend`, which this module does not implement and never will.
+ * This is the whole shape of what an agent key is allowed to do with money: it
+ * can fund the margin that backs its own trades, and it cannot pay anybody. A
+ * transfer to another address is `usdSend`, which this module does not
+ * implement and never will.
+ *
+ * Note what this does and does not guarantee. The destination is whatever the
+ * caller passes as `address`, so the restriction to self is Hyperliquid's —
+ * it refuses an agent-signed transfer to anyone else — and not this code's. An
+ * earlier comment here claimed the parameter could not be anything else, which
+ * was simply untrue of the signature above it.
  *
  * `sourceDex`/`destinationDex` are dex names: `''` is Hyperliquid's own perp
  * dex, `'xyz'` the stock dex. Only the collateral token can cross.
@@ -325,14 +329,21 @@ export type MarketRef = {
  * rather than a table, because a list that grows by one shifts nothing today
  * and everything tomorrow.
  */
-export async function resolveMarket(symbol: string): Promise<MarketRef | null> {
+export async function resolveMarket(symbol: string, dex?: string): Promise<MarketRef | null> {
   const wanted = symbol.toUpperCase();
+  // Naming the dex matters the day the `xyz` deployer lists a ticker the core
+  // universe already has. They share none today, so stocks-first resolves
+  // correctly — and would keep resolving "correctly" to the wrong venue after
+  // such a listing, with the mark agreeing and nothing looking wrong.
+  const only = (d: string) => dex === undefined || dex === d;
   const [stocks, core] = await Promise.all([
     fetchUniverse(STOCK_PERP_DEX),
     fetchUniverse(''),
   ]);
 
-  const stockIndex = stocks.findIndex((m) => m.name.toUpperCase() === `${STOCK_PERP_DEX.toUpperCase()}:${wanted}`);
+  const stockIndex = only(STOCK_PERP_DEX)
+    ? stocks.findIndex((m) => m.name.toUpperCase() === `${STOCK_PERP_DEX.toUpperCase()}:${wanted}`)
+    : -1;
   if (stockIndex >= 0) {
     const m = stocks[stockIndex];
     return {
@@ -344,7 +355,7 @@ export async function resolveMarket(symbol: string): Promise<MarketRef | null> {
     };
   }
 
-  const coreIndex = core.findIndex((m) => m.name.toUpperCase() === wanted);
+  const coreIndex = only('') ? core.findIndex((m) => m.name.toUpperCase() === wanted) : -1;
   if (coreIndex < 0) return null;
   return {
     symbol: wanted,

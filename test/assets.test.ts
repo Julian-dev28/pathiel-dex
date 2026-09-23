@@ -126,6 +126,32 @@ describe('perp market parsing', () => {
   });
 });
 
+describe('a malformed universe', () => {
+  // The sibling reader in balances.ts is guarded against exactly this and has
+  // a test for it; this one read the same API and had neither.
+  it('returns nothing rather than throwing on a body that is not a universe', () => {
+    const bad = [
+      [undefined, []],
+      [{ universe: null }, []],
+      [{ universe: [{ name: 'xyz:NVDA', maxLeverage: 20, szDecimals: 3 }] }, null],
+    ];
+    for (const [meta, ctxs] of bad) {
+      expect(parseMarkets([meta, ctxs] as never, 'xyz')).toEqual([]);
+    }
+  });
+
+  it('skips an entry with no name instead of reading undefined', () => {
+    const rows = parseMarkets(
+      [
+        { universe: [{ maxLeverage: 20, szDecimals: 3 }, { name: 'xyz:NVDA', maxLeverage: 20, szDecimals: 3 }] },
+        [{ markPx: '1' }, { markPx: '228.21' }],
+      ] as never,
+      'xyz',
+    );
+    expect(rows.map((r) => r.symbol)).toEqual(['NVDA']);
+  });
+});
+
 describe('the perp mark against the cost of buying, and funding', () => {
   const market = (over: Partial<PerpMarket> = {}): PerpMarket => ({
     symbol: 'NVDA',

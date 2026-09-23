@@ -183,12 +183,23 @@ export function parseClearinghouse(data: unknown, dex: string): PerpAccount {
 
 /* ── reads ────────────────────────────────────────────────────────────── */
 
-const decodeBalance = (res: { success: boolean; returnData: `0x${string}` } | undefined): bigint => {
-  if (!res?.success || res.returnData === '0x') return 0n;
+/**
+ * A token balance, or null when the call did not answer.
+ *
+ * Null rather than zero, because this module's whole policy is that a source
+ * which failed must be named rather than dropped — a chain whose RPC died
+ * looks exactly like an address holding nothing on it. That was enforced per
+ * chain and abandoned per token: one paused proxy in the table reported the
+ * holding as absent with nothing in `errors` to say otherwise.
+ */
+const decodeBalance = (
+  res: { success: boolean; returnData: `0x${string}` } | undefined,
+): bigint | null => {
+  if (!res?.success || res.returnData === '0x') return null;
   try {
     return decodeFunctionResult({ abi: ERC20, functionName: 'balanceOf', data: res.returnData }) as bigint;
   } catch {
-    return 0n;
+    return null;
   }
 };
 
@@ -263,7 +274,17 @@ export async function fetchAccount(address: Address): Promise<AccountBalances> {
   spot.forEach((r, i) => {
     if (r.status === 'rejected') return errors.push({ source: CHAIN_LIST[i].key, message: why(r.reason) });
     native.push(r.value.native);
-    rows.push(...r.value.rows);
+    for (const row of r.value.rows) {
+      // A token whose balanceOf did not answer is named, not counted as zero.
+      if (row.raw === null) {
+        errors.push({
+          source: `${row.chain}:${row.token.symbol}`,
+          message: 'balanceOf did not answer',
+        });
+        continue;
+      }
+      rows.push({ chain: row.chain, token: row.token, raw: row.raw });
+    }
   });
 
   const accounts: PerpAccount[] = [];

@@ -11,6 +11,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { recoverTypedDataAddress, type Address, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { actionHash, SIGNATURE_CHAIN_ID } from '@/lib/hl-sign';
@@ -237,15 +238,41 @@ describe('user-signed actions', () => {
       fromSubAccount: '',
       nonce: 7,
     });
-    // The destination is the account itself because there is no parameter that
-    // could make it anything else.
-    expect(req.action.destination).toBe(ADDRESS);
+    // Asserting the destination is what was passed in proves nothing about
+    // safety — the restriction to self is Hyperliquid's, not this code's. What
+    // is worth pinning is the action shape the exchange has to recognise.
+    expect(req.action.type).toBe('sendAsset');
+    expect(req.action.sourceDex).toBe('');
+    expect(req.action.destinationDex).toBe('xyz');
+    expect(req.action.token).toBe(USDC_TOKEN);
   });
 });
 
 describe('what the module refuses to be able to do', () => {
-  it('exports no way to withdraw or to pay a third party', () => {
-    const exported = Object.keys(perpOrder);
-    expect(exported.filter((name) => /withdraw|usdsend|spotsend|transfer/i.test(name))).toEqual([]);
+  // The previous version of this grepped export *names* for /withdraw|usdsend|
+  // spotsend|transfer/ and read as a safety proof. buildAgentSendAsset — which
+  // moves money and takes its destination from the caller — passed it. A name
+  // is not a capability; what matters is which action types can be built.
+  it('can build no action type that moves money off the account', () => {
+    const forbidden = ['withdraw3', 'usdSend', 'spotSend'];
+    const source = readFileSync(new URL('../src/lib/perp-order.ts', import.meta.url), 'utf8');
+    for (const type of forbidden) {
+      expect(source.includes(`type: '${type}'`), `${type} must not be constructible`).toBe(false);
+    }
+  });
+
+  it('builds only the action types this product needs', async () => {
+    const built = await Promise.all([
+      buildOrder(KEY, { asset: 0, isBuy: true, size: 1, price: 1 }, { nonce: 1 }),
+      buildCancel(KEY, [{ asset: 0, oid: 1 }], { nonce: 1 }),
+      buildUpdateLeverage(KEY, { asset: 0, isCross: true, leverage: 5 }, { nonce: 1 }),
+      buildScheduleCancel(KEY, null, { nonce: 1 }),
+    ]);
+    expect(built.map((r) => r.action.type as string).sort()).toEqual([
+      'cancel',
+      'order',
+      'scheduleCancel',
+      'updateLeverage',
+    ]);
   });
 });

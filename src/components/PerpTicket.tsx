@@ -162,6 +162,9 @@ export function PerpTicket({ row }: { row: PerpRow | null }) {
     try {
       const built = await prepareOrder({
         asset: row.symbol,
+        // The row the user clicked names its own universe; resolving by symbol
+        // alone would pick stocks-first regardless of which they chose.
+        dex: row.dex,
         side,
         usd: sizeUsd,
         ...(isLimit ? { limitPrice: limitUsd } : {}),

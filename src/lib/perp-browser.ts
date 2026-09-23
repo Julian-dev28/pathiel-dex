@@ -47,6 +47,12 @@ export type PerpOrderIntent = {
   /** Omit for a market order (IOC through the book). */
   limitPrice?: number;
   reduceOnly?: boolean;
+  /**
+   * Which universe the market is in: '' for Hyperliquid's own, 'xyz' for the
+   * stock dex. Omitted resolves stocks-first, which is right today only
+   * because the two share no symbols.
+   */
+  dex?: string;
   /** Market orders only; defaults to 50. */
   slippageBps?: number;
 };
@@ -84,10 +90,12 @@ export type PreparedOrder = {
  * than signing an old one.
  */
 export async function prepareOrder(intent: PerpOrderIntent): Promise<PreparedOrder> {
-  const market = await resolveMarket(intent.asset);
+  const market = await resolveMarket(intent.asset, intent.dex);
   if (!market) throw new Error(`no perp market for ${intent.asset}`);
 
-  const [live] = (await fetchPerpMarkets()).filter((m) => m.symbol === market.symbol);
+  const [live] = (await fetchPerpMarkets()).filter(
+    (m) => m.symbol === market.symbol && m.dex === market.dex,
+  );
   if (!live) throw new Error(`no mark price for ${intent.asset}`);
 
   const isBuy = intent.side === 'buy';
