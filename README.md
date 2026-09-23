@@ -89,6 +89,45 @@ trades (`npm run backtest -- xlayer`), but the public RPC does not serve
 Chain, though, its RPC does serve deep archive state, so the Solidity fork tests
 can reach it — that is the missing piece, not a permanent gap.
 
+## One account, three chains
+
+The complaint this answers is onboarding. Funds sit on whichever chain they
+landed on, and the old answer to "I hold USDC on Base and want NVDA on X Layer"
+was: go and bridge, come back, try again.
+
+**A chain is now a route.** `/api/plan` prices every chain that lists an asset
+end to end — the crossing and the swap together — and ranks them by units
+received. Ranking on units rather than price is the whole point: a crossing
+takes its cut before the pool sees the money, so two plans both spending
+"$1000" are not spending the same thing.
+
+```
+$2500 on X Layer, buying AAPL
+  robinhood   7.319458 @ $341.56   cross 25bp/1s    Uniswap V3 0.05%
+  xlayer      7.306565 @ $342.16   cross none       Uniswap V3 0.05%
+  base        7.297111 @ $342.60   cross 29bp/2s    Uniswap V3 0.30%
+```
+
+17.6bp better on another chain *after* paying 25bp to get there — an edge that
+is invisible unless both halves are priced together. The trade page shows this
+as a card under the quote; it suggests and never acts, because crossing is a
+bridge deposit the user signs.
+
+Bridging is an **intent network** (Relay), not a canonical bridge: a solver
+fronts the destination side from its own inventory, which is why these settle in
+seconds. It also reaches Hyperliquid's margin accounts, so funding a perp
+position is a bridge destination rather than a separate errand.
+
+**This is a quote, not a computation.** A swap price is read from pool state and
+can be checked against the chain; a bridge price is an offer from a third party,
+which can only be taken or left. `src/lib/bridge.ts` says so where it will be
+read. Gas is not netted out either — three chains price it in three tokens, two
+of which are not the dollar being spent, and a total that quietly converted OKB
+at a fourth price would be worse than an honest omission.
+
+`/account` puts the other half on screen: one address, its balances on all three
+chains grouped by asset, and its Hyperliquid perp margin. Reads only.
+
 ## Perps on the same names
 
 The stocks this router quotes on three chains also trade as perpetuals, and the
