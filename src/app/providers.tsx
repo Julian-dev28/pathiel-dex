@@ -10,6 +10,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { CHAINS } from '@/lib/chain';
 import { ChainProvider } from '@/components/ChainProvider';
+import { AccountProvider } from '@/components/AccountProvider';
 
 /**
  * Injected connectors only — MetaMask, Rabby, Coinbase Wallet, Brave.
@@ -58,7 +59,14 @@ export function Providers({ children }: { children: React.ReactNode }) {
   return (
     <WagmiProvider config={wagmiConfig}>
       <QueryClientProvider client={queryClient}>
-        <ChainProvider>{children}</ChainProvider>
+        {/* Above the pages rather than inside one: the derived key lives in
+            this provider, so mounting it per page would forget the account on
+            every navigation and ask the customer to sign again to reach the
+            trade they were about to make. Inside WagmiProvider because it
+            watches the connected wallet and locks when that changes. */}
+        <AccountProvider>
+          <ChainProvider>{children}</ChainProvider>
+        </AccountProvider>
       </QueryClientProvider>
     </WagmiProvider>
   );

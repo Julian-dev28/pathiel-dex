@@ -1,4 +1,3 @@
-import { AccountProvider } from '@/components/AccountProvider';
 import { TradingAccount } from '@/components/TradingAccount';
 import { BalancesView } from '@/components/BalancesView';
 
@@ -13,9 +12,9 @@ export const metadata = { title: 'Account' };
  */
 export default function Page() {
   return (
-    <AccountProvider>
+    <>
       <TradingAccount />
       <BalancesView />
-    </AccountProvider>
+    </>
   );
 }

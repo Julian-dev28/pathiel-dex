@@ -19,6 +19,8 @@ import { TokenSelect } from './TokenSelect';
 import { RoutePath } from './RoutePath';
 import { LiveTape } from './LiveTape';
 import { CrossChainCard } from './CrossChainCard';
+import { useTradingAccount } from './AccountProvider';
+import { swapFromAccount, TradeError, type SentStep } from '@/lib/account/trade';
 import { AccountPanel } from './AccountPanel';
 import {
   Card,
@@ -88,8 +90,16 @@ export function Terminal() {
   const amountIn = useMemo(() => toBase(amount, tokenIn), [amount, tokenIn]);
 
   const { address, isConnected } = useAccount();
+  // When the trading account is unlocked it is the signer: it holds the funds,
+  // it signs without a popup, and it is on every chain at once — so the
+  // wrong-chain check below does not apply to it.
+  const { account } = useTradingAccount();
+  const signer = account?.address ?? address;
+  const [accountRun, setAccountRun] = useState<{ sending: boolean; sent: SentStep[]; error: string | null }>(
+    { sending: false, sent: [], error: null },
+  );
   const chainId = useChainId();
-  const wrongChain = isConnected && chainId !== chain.id;
+  const wrongChain = !account && isConnected && chainId !== chain.id;
 
   const abortRef = useRef<AbortController | null>(null);
   const runQuote = useCallback(async () => {
@@ -189,17 +199,19 @@ export function Terminal() {
     address: tokenIn.address,
     abi: ERC20,
     functionName: 'balanceOf',
-    args: address ? [address] : undefined,
+    args: signer ? [signer] : undefined,
     chainId: chain.id,
-    query: { enabled: !!address, refetchInterval: 15_000 },
+    query: { enabled: !!signer, refetchInterval: 15_000 },
   });
 
   // Most venues need one approval; Uniswap V4 needs two (the token to Permit2,
   // then Permit2 to the router). The button walks them in order, one per click.
   const { data: approvals, refetch: refetchAllowance } = useQuery({
-    queryKey: ['approvals', chain.id, address, execVenue?.id, amountIn.toString()],
-    queryFn: () => pendingApprovals(publicClient!, address!, execVenue!, amountIn),
-    enabled: !!address && !!execVenue && !!publicClient && amountIn > 0n,
+    queryKey: ['approvals', chain.id, signer, execVenue?.id, amountIn.toString()],
+    queryFn: () => pendingApprovals(publicClient!, signer!, execVenue!, amountIn),
+    // The account path sends its own approvals inside the trade, so they are
+    // read here only to know whether the wallet path needs a first click.
+    enabled: !account && !!signer && !!execVenue && !!publicClient && amountIn > 0n,
   });
   const nextApproval = approvals?.[0];
   const needsApproval = !!nextApproval;
@@ -231,17 +243,52 @@ export function Terminal() {
   };
 
   const onSwap = () => {
-    if (!execVenue || !address || !quote || expired) return;
+    if (!execVenue || !signer || !quote || expired) return;
     reset();
-    sendTransaction({ ...buildSwap(execVenue, amountIn, floor, address), chainId: chain.id });
+    if (!account) {
+      sendTransaction({ ...buildSwap(execVenue, amountIn, floor, signer), chainId: chain.id });
+      return;
+    }
+    // One click for the whole trade: the account sends its own approvals and
+    // waits for each, so there is no second button and no wallet popup.
+    setAccountRun({ sending: true, sent: [], error: null });
+    swapFromAccount(account, chain.key, execVenue, amountIn, floor)
+      .then((sent) => {
+        setAccountRun({ sending: false, sent, error: null });
+        refetchAllowance();
+        runQuote();
+      })
+      .catch((e: unknown) => {
+        // What landed matters more than the message: a trade that stopped
+        // after its approval has changed the account's state.
+        const sent = e instanceof TradeError ? e.sent : [];
+        setAccountRun({
+          sending: false,
+          sent,
+          error: e instanceof Error ? e.message.split('\n')[0] : 'the trade failed',
+        });
+      });
   };
 
   const blocked =
-    !quote || expired || amountIn <= 0n || (highImpact && !acknowledgedImpact) || wrongChain;
+    !quote ||
+    expired ||
+    amountIn <= 0n ||
+    (highImpact && !acknowledgedImpact) ||
+    wrongChain ||
+    accountRun.sending;
 
   /** One line that is always true about what the button will do next. */
   const buttonLabel = (): string => {
     if (!isConnected) return 'Connect a wallet';
+    if (account) {
+      if (accountRun.sending) {
+        return accountRun.sent.length > 0 ? 'Swapping…' : 'Approving and swapping…';
+      }
+      if (insufficient) return `Not enough ${tokenIn.symbol} in your account`;
+      if (expired) return 'Refreshing price…';
+      return `Trade ${amount || '0'} ${tokenIn.symbol} from your account`;
+    }
     if (wrongChain) return `Switch to ${chain.name}`;
     if (insufficient) return `Not enough ${tokenIn.symbol}`;
     if (needsApproval) return isPending || mining ? 'Approving…' : approvalLabel(nextApproval);
@@ -453,11 +500,13 @@ export function Terminal() {
       {/* ── the action ──────────────────────────────────────────────── */}
       <button
         className="c-go"
-        onClick={needsApproval ? onApprove : onSwap}
+        onClick={needsApproval && !account ? onApprove : onSwap}
         disabled={
           !isConnected ||
           insufficient ||
-          (needsApproval ? isPending || mining : blocked || isPending || mining)
+          (needsApproval && !account
+            ? isPending || mining
+            : blocked || isPending || mining || accountRun.sending)
         }
         type="button"
       >
@@ -465,6 +514,15 @@ export function Terminal() {
       </button>
 
       {txError && <ErrorNote>{txError.message.split('\n')[0]}</ErrorNote>}
+
+      {accountRun.error && (
+        <ErrorNote>
+          {accountRun.error}
+          {accountRun.sent.length > 0
+            ? ` — ${accountRun.sent.map((s) => s.description).join(', ')} already landed.`
+            : ' Nothing was sent.'}
+        </ErrorNote>
+      )}
 
       {txHash && (
         <div className={`c-tx${mined ? ' ok' : ''}`}>
