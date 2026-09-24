@@ -91,42 +91,38 @@ can reach it — that is the missing piece, not a permanent gap.
 
 ## One account, three chains
 
-The complaint this answers is onboarding. Funds sit on whichever chain they
-landed on, and the old answer to "I hold USDC on Base and want NVDA on X Layer"
-was: go and bridge, come back, try again.
+Sign in with your wallet, sign one message, fund the account it derives, and
+trade Base, Robinhood Chain, X Layer and Hyperliquid perps from a single
+balance — no chain selector and no wallet popup per trade.
 
-**A chain is now a route.** `/api/plan` prices every chain that lists an asset
-end to end — the crossing and the swap together — and ranks them by units
-received. Ranking on units rather than price is the whole point: a crossing
-takes its cut before the pool sees the money, so two plans both spending
-"$1000" are not spending the same thing.
+**Nothing is deployed and nothing is held.** The account is an ordinary
+keypair derived from that signature, so it exists at the same address on every
+EVM chain and is already a valid Hyperliquid account. There is no contract to
+audit, no pooled wallet, and no ledger of liabilities: the funds sit at an
+address only your wallet can reproduce, and the withdrawal path back is always
+open.
 
-```
-$2500 on X Layer, buying AAPL
-  robinhood   7.319458 @ $341.56   cross 25bp/1s    Uniswap V3 0.05%
-  xlayer      7.306565 @ $342.16   cross none       Uniswap V3 0.05%
-  base        7.297111 @ $342.60   cross 29bp/2s    Uniswap V3 0.30%
-```
+**It is permanent, not a session.** The same wallet signing the same message
+reproduces the same key on any device, years later. "Session" only describes
+how long the key is held in memory — it is never written to storage, so a
+reload asks again and a closed tab forgets.
 
-17.6bp better on another chain *after* paying 25bp to get there — an edge that
-is invisible unless both halves are priced together. The trade page shows this
-as a card under the quote; it suggests and never acts, because crossing is a
-bridge deposit the user signs.
+A signature is put into one canonical form before it becomes a key (`v` as
+27/28, `s` in the lower half). Two encodings of the same signature are the same
+authorisation, and hashed raw they derived two different accounts — a customer
+funding one and signing in later through another connector would have found an
+empty account with their balance at an address the page no longer produced.
 
-Bridging is an **intent network** (Relay), not a canonical bridge: a solver
-fronts the destination side from its own inventory, which is why these settle in
-seconds. It also reaches Hyperliquid's margin accounts, so funding a perp
-position is a bridge destination rather than a separate errand.
+**What the customer is told before they fund it**, because they are creating
+the thing that holds their money: the account is reproduced from their
+signature, anyone who obtains that signature controls it permanently and it
+cannot be rotated — only replaced by versioning the label — and the key lives
+in the page, so this is a trading float rather than a vault.
 
-**This is a quote, not a computation.** A swap price is read from pool state and
-can be checked against the chain; a bridge price is an offer from a third party,
-which can only be taken or left. `src/lib/bridge.ts` says so where it will be
-read. Gas is not netted out either — three chains price it in three tokens, two
-of which are not the dollar being spent, and a total that quietly converted OKB
-at a fourth price would be worse than an honest omission.
-
-`/account` puts the other half on screen: one address, its balances on all three
-chains grouped by asset, and its Hyperliquid perp margin. Reads only.
+**Gas is part of funding.** An account holding USDC and no native token cannot
+move, and each chain prices gas in its own currency. The floors are derived
+from each chain's fee floor rather than guessed, and the interface states the
+shortfall instead of offering a button that fails.
 
 ## Perps on the same names
 
