@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import type { PerpRow } from '@/lib/perps';
 import { bps, pct } from '@/lib/format';
 import { useChain } from './ChainProvider';
+import { ChainTabs } from './ChainTabs';
 import { PerpTicket } from './PerpTicket';
 import { Card, Answer, Answers, Reveal, Chip, Empty, ErrorNote, Loading, PageHead } from './ui';
 
@@ -59,6 +60,8 @@ export function PerpsView() {
         title="Perps"
         lede={`Stock perps on Hyperliquid, beside what the same asset costs to buy outright wherever this router lists it. Where both sides exist on ${chain.name}, the gap between them is the third column.`}
       />
+
+      <ChainTabs />
 
       {error && (
         <Card title="Perps">

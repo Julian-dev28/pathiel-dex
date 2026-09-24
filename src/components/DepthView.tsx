@@ -7,6 +7,7 @@ import { fetchQuote, type QuoteResponse } from '@/lib/api';
 import { sig, bps } from '@/lib/format';
 import { DepthChart } from './DepthChart';
 import { TokenSelect } from './TokenSelect';
+import { ChainTabs } from './ChainTabs';
 import { Card, Answer, Answers, Reveal, Empty, ErrorNote, Loading, PageHead, Segmented } from './ui';
 
 const SIZES = ['0.1', '1', '10', '50'];
@@ -69,6 +70,8 @@ export function DepthView() {
         title="Depth"
         lede="What size costs, venue by venue. Where two lines cross is where the best venue changes."
       />
+
+      <ChainTabs />
 
       <Card title="Pair and size">
         <div className="c-controls">

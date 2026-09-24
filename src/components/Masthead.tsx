@@ -8,7 +8,6 @@ import type { Connector } from 'wagmi';
 import { injected } from '@wagmi/core';
 import type { EIP1193Provider } from 'viem';
 import { addr } from '@/lib/format';
-import { CHAIN_LIST, isChainKey } from '@/lib/chain';
 import { useChain } from './ChainProvider';
 import { ThemeToggle } from './ThemeToggle';
 import { WalletModal } from './WalletModal';
@@ -59,7 +58,7 @@ export function Masthead() {
   const { disconnect } = useDisconnect();
   const chainId = useChainId();
   const { switchChain } = useSwitchChain();
-  const { chain, setChain } = useChain();
+  const { chain } = useChain();
 
   // null until the probe below has run: the server cannot know what is
   // installed, and rendering "No wallet" while still looking tells the visitor
@@ -184,18 +183,12 @@ export function Masthead() {
 
         <div className="c-bar-right">
           <ThemeToggle />
-          <select
-            className="c-wallet c-chain"
-            value={chain.key}
-            onChange={(e) => isChainKey(e.target.value) && setChain(e.target.value)}
-            aria-label="Chain"
-          >
-            {CHAIN_LIST.map((c) => (
-              <option key={c.key} value={c.key}>
-                {c.name}
-              </option>
-            ))}
-          </select>
+          {/* No chain picker. Which chain a trade happens on is arithmetic —
+              where the dollars are, what a crossing costs, which pool is
+              deepest — and the router answers it per trade. Asking the
+              customer was the habit this product set out to break. The
+              inspection pages that genuinely need a chain carry their own
+              control. */}
           {wrongChain ? (
             <button className="c-wallet warn" onClick={() => switchChain({ chainId: chain.id })}>
               Switch to {chain.name}

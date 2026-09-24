@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { bySymbol } from '@/lib/chain';
 import { usePair } from './ChainProvider';
+import { ChainTabs } from './ChainTabs';
 import { sig, bps, addr } from '@/lib/format';
 import { TokenSelect } from './TokenSelect';
 import { CycleRoute } from './CycleRoute';
@@ -122,6 +123,8 @@ export function ToolsView() {
         title="Execution tools"
         lede="Five things a swap screen could tell you, and none of them do."
       />
+
+      <ChainTabs />
 
       <Card title="Set up a trade">
         <div className="c-controls">

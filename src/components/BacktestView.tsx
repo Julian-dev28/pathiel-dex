@@ -6,6 +6,7 @@ import { bySymbol } from '@/lib/chain';
 import { sig, bps, addr } from '@/lib/format';
 import { EdgeHistogram } from './EdgeHistogram';
 import { useChain } from './ChainProvider';
+import { ChainTabs } from './ChainTabs';
 import { Card, Answer, Answers, Reveal, Empty, PageHead } from './ui';
 
 /** The backtest for the chain picked in the masthead. Every chain's aggregate
@@ -36,6 +37,8 @@ export function BacktestView({ byChain }: { byChain: Record<ChainKey, Aggregate>
         title="Backtest"
         lede={`Every ${chain.name} trade below actually happened. The router was re-quoted at the block before each one and asked what it would have done.`}
       />
+
+      <ChainTabs />
 
       {/* the single claim */}
       <Card

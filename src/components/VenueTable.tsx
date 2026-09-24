@@ -5,6 +5,7 @@ import type { Token } from '@/lib/chain';
 import { usePair } from './ChainProvider';
 import { sig, addr } from '@/lib/format';
 import { TokenSelect } from './TokenSelect';
+import { ChainTabs } from './ChainTabs';
 import { Card, Answer, Answers, Reveal, Chip, Empty, ErrorNote, Loading, PageHead } from './ui';
 
 type PoolRow = {
@@ -72,6 +73,8 @@ export function VenueTable() {
         title="Venues"
         lede="Every pool this pair could route through, found by asking each factory rather than from a list."
       />
+
+      <ChainTabs />
 
       <Card title="Pair">
         <div className="c-controls">
