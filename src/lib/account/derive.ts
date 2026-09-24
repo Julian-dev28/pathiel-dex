@@ -63,6 +63,50 @@ export function accountMessage(owner: Address): string {
 
 export class DerivationError extends Error {}
 
+/** The order of the secp256k1 curve; `s` above half of it has an equivalent below. */
+const CURVE_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+
+/**
+ * The one signature, whichever way a wallet chose to write it.
+ *
+ * Two encodings of the same signature are the same authorisation, and hashing
+ * them raw would give two different accounts — so the customer funds one,
+ * signs in later through a different wallet or connector, and finds an empty
+ * account while their money sits at an address this page no longer derives.
+ * Nothing about it would look broken.
+ *
+ * Two ways that happens, both legal:
+ *
+ *   - **The recovery id.** Some wallets return 27/28 and some return 0/1.
+ *   - **Malleability.** For every valid `s` there is an equivalent `n − s`
+ *     with the recovery bit flipped. Most implementations normalise to the
+ *     lower half; nothing obliges them to.
+ *
+ * So the signature is put in one form before it becomes a key: `v` as 27/28,
+ * `s` in the lower half. Both encodings then derive the same account.
+ */
+export function canonicalSignature(signature: Hex): Hex {
+  if (!/^0x[0-9a-fA-F]{130}$/.test(signature)) {
+    throw new DerivationError('expected a 65-byte signature to derive the account from');
+  }
+  const body = signature.slice(2).toLowerCase();
+  const r = body.slice(0, 64);
+  let s = BigInt(`0x${body.slice(64, 128)}`);
+  let v = parseInt(body.slice(128, 130), 16);
+
+  if (v < 27) v += 27;
+  if (v !== 27 && v !== 28) {
+    // An EIP-155 style `v`, or a wallet doing something this cannot interpret.
+    // Guessing would derive an account the customer can never return to.
+    throw new DerivationError(`unexpected recovery id ${v} in the signature`);
+  }
+  if (s > CURVE_N / 2n) {
+    s = CURVE_N - s;
+    v = v === 27 ? 28 : 27;
+  }
+  return `0x${r}${s.toString(16).padStart(64, '0')}${v.toString(16).padStart(2, '0')}` as Hex;
+}
+
 /**
  * Derive the trading account from the owner's signature.
  *
@@ -70,15 +114,13 @@ export class DerivationError extends Error {}
  * from the wallet. Nothing here talks to a wallet, which keeps this pure and
  * testable, and keeps the one dangerous value out of a module that also does
  * network calls.
+ *
+ * A smart-contract wallet cannot produce a signature of this shape at all
+ * (EIP-1271 validates rather than recovers), and is refused by the length
+ * check rather than silently given an account nobody holds the key to.
  */
 export function deriveAccount(signature: Hex): PrivateKeyAccount {
-  // A 65-byte signature. Anything else is a wallet returning a shape we did
-  // not expect, and deriving an account from it would produce a valid-looking
-  // address nobody can reach again.
-  if (!/^0x[0-9a-fA-F]{130}$/.test(signature)) {
-    throw new DerivationError('expected a 65-byte signature to derive the account from');
-  }
-  return privateKeyToAccount(keccak256(signature));
+  return privateKeyToAccount(keccak256(canonicalSignature(signature)));
 }
 
 /** The account's address, which is where the customer sends funds. */

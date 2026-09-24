@@ -143,11 +143,25 @@ describe('what a stopped withdrawal reports', () => {
 describe('formatting a gas balance', () => {
   it('reads as an amount of the chain’s own currency', () => {
     expect(nativeText(10n ** 18n, 'ETH')).toBe('1 ETH');
-    expect(nativeText(GAS_FLOOR.xlayer, 'OKB')).toBe('0.001 OKB');
+    expect(nativeText(6n * 10n ** 14n, 'OKB')).toBe('0.0006 OKB');
     expect(nativeText(0n, 'ETH')).toBe('0 ETH');
   });
 
   it('does not round a small balance away to zero', () => {
-    expect(nativeText(GAS_FLOOR.base, 'ETH')).toBe('0.004 ETH');
+    // Asserted against literal amounts rather than against GAS_FLOOR: the
+    // floors are derived from each chain's fee floor and are free to move,
+    // and a formatting test that moves with them tests nothing.
+    expect(nativeText(3n * 10n ** 14n, 'ETH')).toBe('0.0003 ETH');
+    // A single wei does round away, which is right: six decimal places is a
+    // balance a person reads, and dust below that is not a balance.
+    expect(nativeText(1n, 'ETH')).toBe('0 ETH');
+  });
+
+  it('shows every gas floor as a figure a person can read', () => {
+    // The floors are what the interface asks someone to fund, so none of them
+    // may render as "0".
+    for (const [chain, floor] of Object.entries(GAS_FLOOR)) {
+      expect(nativeText(floor, 'X'), `${chain} floor renders as zero`).not.toBe('0 X');
+    }
   });
 });

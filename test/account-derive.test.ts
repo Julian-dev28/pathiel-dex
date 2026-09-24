@@ -19,6 +19,7 @@ import {
   DerivationError,
   accountAddress,
   accountMessage,
+  canonicalSignature,
   deriveAccount,
 } from '@/lib/account/derive';
 
@@ -77,6 +78,64 @@ describe('deriving the account', () => {
     expect(deriveAccount(signature).address).toBe(
       privateKeyToAccount(keccak256(signature)).address,
     );
+  });
+});
+
+describe('one signature, whichever way a wallet writes it', () => {
+  /**
+   * The bug this prevents loses the money without looking like anything.
+   * Two encodings of the same signature are the same authorisation; hashed
+   * raw they gave two different accounts, so a customer who funded one and
+   * later signed in through a different wallet or connector would find an
+   * empty account and no explanation.
+   */
+  const N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+
+  const withRawRecoveryId = (sig: Hex): Hex => {
+    const tail = sig.slice(130);
+    return (sig.slice(0, 130) + (tail === '1b' ? '00' : '01')) as Hex;
+  };
+
+  const withHighS = (sig: Hex): Hex => {
+    const body = sig.slice(2);
+    const s = N - BigInt(`0x${body.slice(64, 128)}`);
+    const v = body.slice(128) === '1b' ? '1c' : '1b';
+    return `0x${body.slice(0, 64)}${s.toString(16).padStart(64, '0')}${v}` as Hex;
+  };
+
+  it('derives the same account whether v is 27/28 or 0/1', async () => {
+    const sig = (await signFor(owner)) as Hex;
+    expect(accountAddress(withRawRecoveryId(sig))).toBe(accountAddress(sig));
+  });
+
+  it('derives the same account from the malleable form of the signature', async () => {
+    // For every valid s there is an equivalent n − s with the recovery bit
+    // flipped. Most wallets normalise; nothing obliges them to.
+    const sig = (await signFor(owner)) as Hex;
+    expect(accountAddress(withHighS(sig))).toBe(accountAddress(sig));
+  });
+
+  it('puts a signature into one canonical form', async () => {
+    const sig = (await signFor(owner)) as Hex;
+    const canonical = canonicalSignature(sig);
+    expect(canonicalSignature(withRawRecoveryId(sig))).toBe(canonical);
+    expect(canonicalSignature(withHighS(sig))).toBe(canonical);
+    // Already canonical input is returned unchanged, lowercased.
+    expect(canonicalSignature(canonical)).toBe(canonical);
+    expect(canonical.slice(130)).toMatch(/^1b|1c$/);
+  });
+
+  it('refuses a recovery id it cannot interpret rather than guessing', async () => {
+    // An EIP-155 style v, or a wallet doing something else entirely. Guessing
+    // derives an account the customer can never return to.
+    const sig = (await signFor(owner)) as Hex;
+    const odd = (sig.slice(0, 130) + '25') as Hex;
+    expect(() => deriveAccount(odd)).toThrow(/unexpected recovery id/);
+  });
+
+  it('refuses a smart-contract wallet signature instead of inventing an account', () => {
+    // EIP-1271 validates rather than recovers; there is no key behind it.
+    expect(() => deriveAccount('0xdead' as Hex)).toThrow(DerivationError);
   });
 });
 

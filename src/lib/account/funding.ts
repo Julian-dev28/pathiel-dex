@@ -27,22 +27,28 @@ import { erc20Abi } from '../abis';
 const ERC20 = parseAbi(erc20Abi);
 
 /**
- * What the account needs in native currency to be able to trade at all.
+ * Gas the account should hold before it is asked to trade.
  *
- * A swap is an approval and a swap, occasionally two approvals for a V4 route
- * through Permit2, and a withdrawal afterwards. These are deliberately
- * generous: the failure of holding too little gas is a customer who cannot
- * move their own money, which is far worse than a few cents of overshoot.
+ * Derived from each chain's own fee floor rather than written down, because a
+ * number picked by hand is wrong in both directions: too low and a trade dies
+ * halfway, too high and the interface tells someone to fund eleven dollars of
+ * ETH to make a swap that costs a cent. Each chain prices gas in its own token
+ * at its own floor, so the only honest constant here is the work, not the
+ * price of it.
+ *
+ * Three million gas is an approval, a swap, and a withdrawal afterwards, with
+ * room for a V4 route's second approval — then ten times over, because a fee
+ * floor is a floor and the point of a buffer is the day it is not.
  */
-export const GAS_FLOOR: Record<ChainKey, bigint> = {
-  // 2 gwei × ~2M gas of headroom, in wei.
-  base: 4_000_000_000_000_000n,
-  // Robinhood Chain prices gas in ETH at a very low floor.
-  robinhood: 2_000_000_000_000_000n,
-  // X Layer charges OKB at 0.02 gwei; OKB is worth more than ETH per unit of
-  // gas here, so the floor is smaller in absolute terms.
-  xlayer: 1_000_000_000_000_000n,
-};
+const GAS_BUDGET = 3_000_000n;
+const SPIKE_HEADROOM = 10n;
+
+export const GAS_FLOOR: Record<ChainKey, bigint> = Object.fromEntries(
+  Object.values(CHAINS).map((chain) => [
+    chain.key,
+    chain.fallbackGasWei * GAS_BUDGET * SPIKE_HEADROOM,
+  ]),
+) as Record<ChainKey, bigint>;
 
 /** A transaction the caller sends, from whichever account owns it. */
 export type Transfer = {

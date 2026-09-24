@@ -59,6 +59,33 @@ function walletFor(account: PrivateKeyAccount, chain: ChainConfig) {
 }
 
 /**
+ * One transaction at a time per account and chain.
+ *
+ * Every send reads the account's nonce and then uses it. Two trades started
+ * together therefore read the same nonce and build two transactions claiming
+ * it: the chain accepts one and rejects the other, or — worse, and more often
+ * — replaces the first with the second if the fee is higher, so a customer who
+ * clicked twice gets one fill and an approval that silently vanished.
+ *
+ * A queue per (account, chain) rather than a global one, because trades on
+ * different chains have nothing to do with each other and serialising them
+ * would make the multi-chain case needlessly slow.
+ */
+const queues = new Map<string, Promise<unknown>>();
+
+function serialise<T>(account: Address, chainKey: ChainKey, work: () => Promise<T>): Promise<T> {
+  const key = `${account.toLowerCase()}:${chainKey}`;
+  // Chained off whatever is pending, and off its failure too: one trade
+  // failing must not stop the next from being attempted.
+  const next = (queues.get(key) ?? Promise.resolve()).then(work, work);
+  queues.set(
+    key,
+    next.catch(() => undefined),
+  );
+  return next;
+}
+
+/**
  * Execute a swap end to end from the account.
  *
  * Approvals first, each waited for: a swap submitted before its approval is
@@ -70,6 +97,18 @@ function walletFor(account: PrivateKeyAccount, chain: ChainConfig) {
  * multi-step trade stops halfway.
  */
 export async function swapFromAccount(
+  account: PrivateKeyAccount,
+  chainKey: ChainKey,
+  venue: Venue,
+  amountIn: bigint,
+  minimumOut: bigint,
+): Promise<SentStep[]> {
+  return serialise(account.address, chainKey, () =>
+    runSwap(account, chainKey, venue, amountIn, minimumOut),
+  );
+}
+
+async function runSwap(
   account: PrivateKeyAccount,
   chainKey: ChainKey,
   venue: Venue,
@@ -122,15 +161,19 @@ export async function sendFromAccount(
   chainKey: ChainKey,
   transfer: { to: Address; data?: `0x${string}`; value?: bigint },
 ): Promise<`0x${string}`> {
-  const chain = CHAINS[chainKey];
-  const wallet = walletFor(account, chain);
-  const hash = await wallet.sendTransaction({
-    to: transfer.to,
-    data: transfer.data,
-    value: transfer.value ?? 0n,
+  // Through the same queue as a trade: a withdrawal fired while a swap is in
+  // flight would otherwise claim the same nonce and replace it.
+  return serialise(account.address, chainKey, async () => {
+    const chain = CHAINS[chainKey];
+    const wallet = walletFor(account, chain);
+    const hash = await wallet.sendTransaction({
+      to: transfer.to,
+      data: transfer.data,
+      value: transfer.value ?? 0n,
+    });
+    await client(chain).waitForTransactionReceipt({ hash });
+    return hash;
   });
-  await client(chain).waitForTransactionReceipt({ hash });
-  return hash;
 }
 
 /**
