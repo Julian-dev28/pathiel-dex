@@ -5,6 +5,7 @@ import { useAccount, useSignTypedData } from 'wagmi';
 import type { AccountBalances, PerpAccount } from '@/lib/balances';
 import type { PerpRow } from '@/lib/perps';
 import { prepareOrder, submitOrder, type PreparedOrder } from '@/lib/perp-browser';
+import { useTradingAccount } from './AccountProvider';
 import { Card, Answer, Answers, Chip, Empty, ErrorNote, Reveal, Segmented, Suggest } from './ui';
 import {
   accountLeverage,
@@ -42,7 +43,11 @@ const dexName = (dex: string) => dex || 'core';
  * and only the confirm button signs and submits.
  */
 export function PerpTicket({ row }: { row: PerpRow | null }) {
-  const { address, isConnected } = useAccount();
+  const { address: wallet, isConnected } = useAccount();
+  // The trading account is the Hyperliquid account when it is unlocked: same
+  // key, same address, and margin funded to it rather than to the wallet.
+  const { account: signer } = useTradingAccount();
+  const address = signer?.address ?? wallet;
   const { signTypedDataAsync } = useSignTypedData();
 
   const [side, setSide] = useState<'buy' | 'sell'>('buy');
@@ -198,10 +203,17 @@ export function PerpTicket({ row }: { row: PerpRow | null }) {
     setError(null);
     try {
       // The typed data is Hyperliquid's own EIP-712 payload, handed over as
-      // plain records; the wallet is asked to sign exactly what was reviewed.
-      const signature = await signTypedDataAsync(
-        prepared.typedData as unknown as Parameters<typeof signTypedDataAsync>[0],
-      );
+      // plain records; whoever signs is asked for exactly what was reviewed.
+      // The account signs in the page when it is unlocked, which is the whole
+      // point of it — a perp order should not need a popup either.
+      const typedData = prepared.typedData as unknown as Parameters<
+        typeof signTypedDataAsync
+      >[0];
+      const signature = signer
+        ? await signer.signTypedData(
+            prepared.typedData as unknown as Parameters<typeof signer.signTypedData>[0],
+          )
+        : await signTypedDataAsync(typedData);
       setResponse(await submitOrder(prepared.finalize(signature)));
       setPrepared(null);
       setPlacedAt(Date.now());
