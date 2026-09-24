@@ -14,6 +14,8 @@ import { CHAINS, type ChainConfig } from '@/lib/chain';
 import { addr, sig, toBase } from '@/lib/format';
 import type { AccountBalances } from '@/lib/balances';
 import { ACCOUNT_DISCLOSURES, accountMessage } from '@/lib/account/derive';
+import { LEGAL_VERSION } from '@/lib/legal';
+import { acceptTerms, acceptedVersion } from '@/lib/terms';
 import { fundGas, fundToken, type AccountStatus } from '@/lib/account/funding';
 import { useChain } from './ChainProvider';
 import { useTradingAccount } from './AccountProvider';
@@ -119,6 +121,17 @@ export function TradingAccount() {
     );
   }
 
+  /**
+   * Whether this person has accepted the current terms.
+   *
+   * Read once on mount rather than during render: the value lives in browser
+   * storage, and reading it while rendering makes the server and the client
+   * disagree about what to draw.
+   */
+  const [accepted, setAccepted] = useState<string | null>(null);
+  useEffect(() => setAccepted(acceptedVersion()), []);
+  const termsCurrent = accepted === LEGAL_VERSION;
+
   const onSignIn = async () => {
     setSigning(true);
     setSignError(null);
@@ -197,8 +210,37 @@ export function TradingAccount() {
             device, in any browser, in three years.
           </p>
           <Disclosures />
-          <button className="c-go" type="button" onClick={onSignIn} disabled={signing}>
-            {signing ? 'Confirm in your wallet…' : 'Sign the message and derive my account'}
+          <label className="c-ack">
+            <input
+              type="checkbox"
+              checked={termsCurrent}
+              onChange={(e) => {
+                // Recorded against the version, so raising it asks again
+                // rather than leaving someone bound to a document they never
+                // saw.
+                const version = e.target.checked ? acceptTerms() : null;
+                setAccepted(version);
+              }}
+            />
+            <span>
+              I have read the <a href="/risk">risk disclosure</a> and accept the{' '}
+              <a href="/terms">terms of service</a> and{' '}
+              <a href="/privacy">privacy policy</a> (version {LEGAL_VERSION}). I understand this is
+              beta software, that the signature below permanently controls the account, and that
+              nobody can recover it for me.
+            </span>
+          </label>
+          <button
+            className="c-go"
+            type="button"
+            onClick={onSignIn}
+            disabled={signing || !termsCurrent}
+          >
+            {!termsCurrent
+              ? 'Accept the terms to continue'
+              : signing
+                ? 'Confirm in your wallet…'
+                : 'Sign the message and derive my account'}
           </button>
           {signError && <ErrorNote>{signError}</ErrorNote>}
           <Reveal summary="What exactly am I signing?">

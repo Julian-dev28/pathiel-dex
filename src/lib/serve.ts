@@ -142,3 +142,11 @@ export const QUOTE_TTL_MS = 30_000;
 export const quoteCache = new TtlCache<unknown>(3_000);
 export const venueCache = new TtlCache<unknown>(30_000);
 export const quoteLimit = new RateLimit(120, 60_000);
+/**
+ * Redeeming an invitation, limited far harder than quoting.
+ *
+ * An invite code is short enough to guess given enough attempts, and attempts
+ * are the only thing an attacker needs. Ten a minute makes a brute force
+ * impractical while leaving room for someone retyping a code they misread.
+ */
+export const inviteLimit = new RateLimit(10, 60_000);

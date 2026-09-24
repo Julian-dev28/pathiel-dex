@@ -329,6 +329,10 @@
   .c-bar-in { gap: 12px; padding: 0 14px; }
   .c-brand { font-size: 13px; letter-spacing: 0.1em; }
   .c-nav-link { padding: 8px; font-size: 12.5px; }
+
+  /* Fingers are not cursors. These read fine at 30px with a mouse and are a
+     miss with a thumb, and the token select is on the path of every trade. */
+  .tsel-trigger, .icon-btn, .c-chain { min-height: 40px; }
 }
 
 /* ── trade page ───────────────────────────────────────────────────────── */
@@ -461,6 +465,12 @@
 }
 .c-list li:last-child { border-bottom: 0; }
 .c-list li .mono { margin-left: auto; color: var(--ink-2); }
+
+/* Prose bullets, for the legal pages and anywhere a list is sentences rather
+   than a row of values. `.c-list` is a table in disguise; this is a list. */
+.c-list-plain { margin: 10px 0 0; padding-left: 18px; }
+.c-list-plain li { padding: 4px 0; line-height: 1.55; }
+.c-list-plain li + li { margin-top: 2px; }
 
 .c-scroll { overflow-x: auto; }
 .c-table { width: 100%; border-collapse: collapse; }
