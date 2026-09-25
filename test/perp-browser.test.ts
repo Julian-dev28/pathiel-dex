@@ -17,8 +17,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Hex, TypedDataDefinition } from 'viem';
 import { signTypedData } from 'viem/accounts';
 import { splitSignature } from '@/lib/hl-sign';
-import { prepareOrder } from '@/lib/perp-browser';
-import { buildOrder } from '@/lib/perp-order';
+import {
+  explainExchangeError,
+  prepareCancel,
+  prepareOrder,
+} from '@/lib/perp-browser';
+import { buildCancel, buildOrder } from '@/lib/perp-order';
 
 const KEY: Hex = '0x0123456789012345678901234567890123456789012345678901234567890123';
 const NONCE = 1_700_000_000_000;
@@ -205,6 +209,96 @@ describe('the wallet path against the key path', () => {
     expect(signed.signature).toEqual(
       (await buildOrder(KEY, { asset: 110_002, isBuy: true, size: 5.49, price: 182.14, tif: 'Ioc' }, { nonce: NONCE }))
         .signature,
+    );
+  });
+});
+
+/**
+ * Cancelling, which is the other half of placing a limit order.
+ *
+ * A `Gtc` order rests until somebody takes it back, and the browser had no way
+ * to. These check the cancel is the same action the key path sends and that it
+ * names the order it was handed — a cancel carrying the wrong asset id is
+ * accepted by nothing and explains itself to no one.
+ */
+describe('cancelling a resting order', () => {
+  const order = {
+    dex: 'xyz',
+    symbol: 'NVDA',
+    assetId: 110002,
+    oid: 987654321,
+    side: 'buy' as const,
+    sizeLeft: 0.4,
+    origSize: 1,
+    limitUsd: 210.5,
+    placedAt: NONCE,
+    reduceOnly: false,
+  };
+
+  it('signs the bytes the key path signs', async () => {
+    const prepared = prepareCancel(order);
+    const browser = await walletSign(prepared);
+    const viaKey = await buildCancel(KEY, [{ asset: order.assetId, oid: order.oid }]);
+    expect(browser.action).toEqual(viaKey.action);
+    expect(browser.nonce).toBe(viaKey.nonce);
+    expect(browser.signature).toEqual(viaKey.signature);
+  });
+
+  it('cancels the order it was given, not the market', () => {
+    const { action } = prepareCancel(order).finalize(`0x${'11'.repeat(65)}` as Hex);
+    expect(action).toEqual({ type: 'cancel', cancels: [{ a: 110002, o: 987654321 }] });
+  });
+
+  it('shows what is being cancelled rather than what would be bought', () => {
+    expect(prepareCancel(order).summary).toEqual({
+      market: 'xyz:NVDA',
+      side: 'buy',
+      sizeLeft: 0.4,
+      limitUsd: 210.5,
+    });
+  });
+});
+
+describe('orders the exchange would refuse anyway', () => {
+  // A signature spent on an order that cannot be accepted is the one failure
+  // this path can prevent outright.
+  it('refuses a notional under the exchange minimum before signing', async () => {
+    await expect(prepareOrder({ asset: 'NVDA', side: 'buy', usd: 5, dex: 'xyz' })).rejects.toThrow(
+      /under \$10/,
+    );
+  });
+
+  // The check is on the rounded size, priced where the order will rest. $10.40
+  // of a two-decimal market marked at $181.23 buys 0.05 at the $182.13 a market
+  // order reaches to — $9.11, which the venue would have thrown out after the
+  // customer had already signed for it.
+  it('measures the minimum on the size that will actually be sent', async () => {
+    await expect(
+      prepareOrder({ asset: 'NVDA', side: 'buy', usd: 10.4, dex: 'xyz' }),
+    ).rejects.toThrow(/works out at \$9\.11/);
+  });
+
+  it('takes an order that clears it', async () => {
+    const prepared = await prepareOrder({ asset: 'NVDA', side: 'buy', usd: 25, dex: 'xyz' });
+    expect(prepared.summary.notionalUsd).toBeGreaterThanOrEqual(10);
+  });
+});
+
+describe('what the exchange says, in terms someone can act on', () => {
+  it('explains an account Hyperliquid has never seen', () => {
+    expect(explainExchangeError('User or API Wallet 0xabc does not exist.')).toMatch(
+      /never been funded on Hyperliquid/,
+    );
+  });
+
+  it('explains a margin shortfall', () => {
+    expect(explainExchangeError('Insufficient margin to place order')).toMatch(/Reduce the size/);
+  });
+
+  // A wrong explanation is worse than the venue's own words.
+  it('passes anything else through unchanged', () => {
+    expect(explainExchangeError('Price must be divisible by tick size')).toBe(
+      'Price must be divisible by tick size',
     );
   });
 });

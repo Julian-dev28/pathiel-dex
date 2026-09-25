@@ -11,7 +11,12 @@ import {
   type MarginFunding,
 } from '@/lib/account/margin';
 import type { SentStep } from '@/lib/account/trade';
-import { prepareOrder, submitOrder, type PreparedOrder } from '@/lib/perp-browser';
+import {
+  explainExchangeError,
+  prepareOrder,
+  submitOrder,
+  type PreparedOrder,
+} from '@/lib/perp-browser';
 import { useTradingAccount } from './AccountProvider';
 import { Card, Answer, Answers, Chip, Empty, ErrorNote, Reveal, Segmented, Suggest } from './ui';
 import {
@@ -234,7 +239,11 @@ export function PerpTicket({ row }: { row: PerpRow | null }) {
       setPrepared(null);
       setPlacedAt(Date.now());
     } catch (e) {
-      setError(e instanceof Error ? e.message.split('\n')[0] : 'the order was not placed');
+      setError(
+        e instanceof Error
+          ? explainExchangeError(e.message.split('\n')[0])
+          : 'the order was not placed',
+      );
     } finally {
       setBusy(false);
     }

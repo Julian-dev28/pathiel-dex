@@ -22,6 +22,7 @@
  */
 
 import { l1Payload, splitSignature } from './hl-sign';
+import { cancelAction, type OpenOrder } from './perp-orders';
 import {
   marketPrice,
   roundPrice,
@@ -37,6 +38,16 @@ export type { ExchangeRequest };
 
 /** How far through the book a market order reaches, when nothing says. */
 const DEFAULT_SLIPPAGE_BPS = 50;
+
+/**
+ * The smallest order Hyperliquid accepts, in notional dollars.
+ *
+ * Checked here rather than discovered from the exchange, because the rejection
+ * comes back as a bare string after the customer has already signed — and a
+ * signature spent on an order that could never be accepted is the one kind of
+ * failure this module can prevent outright.
+ */
+export const MIN_ORDER_USD = 10;
 
 export type PerpOrderIntent = {
   /** Canonical symbol, e.g. 'NVDA'. */
@@ -119,6 +130,14 @@ export async function prepareOrder(intent: PerpOrderIntent): Promise<PreparedOrd
   const step = 10 ** market.szDecimals;
   const size = Math.floor((intent.usd / price) * step) / step;
   if (size <= 0) throw new Error(`${intent.usd} USD is below one tick of ${market.symbol}`);
+  // Measured on the rounded size, which is what the exchange will see: $10.40
+  // of a coarse market can round down to nine dollars of notional and be
+  // rejected for a minimum the customer thought they had cleared.
+  if (size * price < MIN_ORDER_USD) {
+    throw new Error(
+      `Hyperliquid will not take an order under $${MIN_ORDER_USD}; this one works out at $${(size * price).toFixed(2)}`,
+    );
+  }
 
   const action = orderAction({
     asset: market.assetId,
@@ -157,4 +176,51 @@ export async function prepareOrder(intent: PerpOrderIntent): Promise<PreparedOrd
  */
 export async function submitOrder(req: ExchangeRequest): Promise<unknown> {
   return sendExchange(req);
+}
+
+/**
+ * A cancel, ready for the same wallet to sign.
+ *
+ * Built the same way as an order and sent to the same endpoint, because to the
+ * exchange it is the same kind of thing: an L1 action, signed by whoever owns
+ * the order. The summary is what the customer is cancelling rather than what
+ * they are buying, since that is what they are about to confirm.
+ */
+export function prepareCancel(order: OpenOrder): {
+  summary: { market: string; side: 'buy' | 'sell'; sizeLeft: number; limitUsd: number };
+  typedData: PreparedOrder['typedData'];
+  finalize: (signature: `0x${string}`) => ExchangeRequest;
+} {
+  const action = cancelAction([{ assetId: order.assetId, oid: order.oid }]);
+  const nonce = Date.now();
+  return {
+    summary: {
+      market: `${order.dex || 'core'}:${order.symbol}`,
+      side: order.side,
+      sizeLeft: order.sizeLeft,
+      limitUsd: order.limitUsd,
+    },
+    typedData: l1Payload(action, nonce),
+    finalize: (signature) => ({ action, nonce, signature: splitSignature(signature) }),
+  };
+}
+
+/**
+ * Hyperliquid's rejections, in the customer's terms.
+ *
+ * The exchange answers with a bare string, and two of them mean something the
+ * customer can act on but would never guess. "does not exist" is not a bug and
+ * not a lost order: it is what an account that has never been funded on
+ * Hyperliquid is called, and the fix is a margin transfer. Anything unrecognised
+ * is passed through unchanged rather than dressed up — a wrong explanation is
+ * worse than a venue's own words.
+ */
+export function explainExchangeError(message: string): string {
+  if (/does not exist/i.test(message)) {
+    return 'This account has never been funded on Hyperliquid, so the venue has no record of it yet. Move some dollars into the margin account above and the same order will work.';
+  }
+  if (/insufficient margin|not enough margin/i.test(message)) {
+    return 'Not enough margin behind this order. Reduce the size, or move more dollars into the margin account above.';
+  }
+  return message;
 }

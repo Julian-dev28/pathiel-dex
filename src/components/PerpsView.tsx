@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import type { PerpRow } from '@/lib/perps';
 import { bps, pct } from '@/lib/format';
 import { CHAINS, type ChainKey } from '@/lib/chain';
+import { OpenOrders } from './OpenOrders';
 import { PerpTicket } from './PerpTicket';
 import { Card, Answer, Answers, Reveal, Chip, Empty, ErrorNote, Loading, PageHead } from './ui';
 
@@ -207,6 +208,9 @@ export function PerpsView() {
       ) : null}
 
       {data && <PerpTicket row={pickedRow} />}
+      {/* Account-wide rather than per-market: a resting order is not something
+          you go looking for under the ticker you happened to place it on. */}
+      <OpenOrders />
     </>
   );
 }
