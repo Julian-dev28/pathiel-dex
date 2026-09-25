@@ -106,6 +106,8 @@ export type Route = {
   gasBuy: BridgeQuote | null;
   /** Dollars spent buying that gas. Zero when none was needed. */
   gasCostUsd: number;
+  /** Native currency the destination needs before it can swap. */
+  gasTarget: bigint;
   venue: Venue;
   unitsOut: number;
   /** Dollars per unit, counting the crossings and the gas. */
@@ -289,6 +291,7 @@ export async function routesFor(
           gasCostUsd,
           venue,
           unitsOut,
+          gasTarget: side?.gasTarget ?? 0n,
           allInPriceUsd: (usdAmount + gasCostUsd) / unitsOut,
           etaSeconds: Math.max(gasBuy?.etaSeconds ?? 0, ...crossings.map((c) => c.etaSeconds), 0),
         };
@@ -301,7 +304,11 @@ export async function routesFor(
 
   const priced = routes.filter((r): r is Route => r !== null);
   if (priced.length === 0) {
-    throw new RouteError(problems[0] ?? `nothing quotes ${asset} right now`);
+    // The chains are priced in parallel, so which of them failed first is a
+    // race. An account that can sign nowhere is the one problem the customer
+    // can do something about, so it is preferred over whatever came back first.
+    const frozen = problems.find((p) => p.includes('no native currency'));
+    throw new RouteError(frozen ?? problems[0] ?? `nothing quotes ${asset} right now`);
   }
   // Cheapest per unit, counting the crossings and the gas — so a chain that
   // needs eight dollars of gas does not win by two basis points. That gas stays
@@ -374,10 +381,12 @@ export async function buy(
 
   if (route.gasBuy) {
     onProgress?.({ stage: 'waiting', detail: `waiting for ${dest.name} to have gas` });
+    // Waited for what is actually needed, not for what the quote promised: a
+    // solver that rounds the last wei down has still delivered, and holding out
+    // for its exact figure would sit here for two minutes and then give up.
     const funded = await waitFor(
       () => client(dest).getBalance({ address: account.address }),
-      // Whatever the quote actually promised, which is what was paid for.
-      parseUnits(route.gasBuy.amountOutFormatted, dest.viem.nativeCurrency.decimals),
+      route.gasTarget,
     );
     if (!funded) {
       throw new RouteError(
