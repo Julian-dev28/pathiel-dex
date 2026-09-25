@@ -3,12 +3,11 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
-import { useAccount, useConnect, useDisconnect, useChainId, useSwitchChain } from 'wagmi';
+import {useAccount, useConnect, useDisconnect} from 'wagmi';
 import type { Connector } from 'wagmi';
 import { injected } from '@wagmi/core';
 import type { EIP1193Provider } from 'viem';
 import { addr } from '@/lib/format';
-import { useChain } from './ChainProvider';
 import { ThemeToggle } from './ThemeToggle';
 import { WalletModal } from './WalletModal';
 
@@ -56,9 +55,6 @@ export function Masthead() {
   const { address, isConnected } = useAccount();
   const { connect, connectors, error, reset } = useConnect();
   const { disconnect } = useDisconnect();
-  const chainId = useChainId();
-  const { switchChain } = useSwitchChain();
-  const { chain } = useChain();
 
   // null until the probe below has run: the server cannot know what is
   // installed, and rendering "No wallet" while still looking tells the visitor
@@ -108,7 +104,6 @@ export function Masthead() {
     };
   }, [connectors]);
 
-  const wrongChain = isConnected && chainId !== chain.id;
 
   const pick = (connector: Connector) => {
     setPending(connector);
@@ -139,8 +134,9 @@ export function Masthead() {
     // Deliberately no chainId. wagmi's injected connector rethrows a rejected
     // switchChain (connectors/injected.js), so asking for the chain here turns
     // a declined network prompt into a failed connection with the accounts
-    // already approved. Connect first; the masthead's "Switch to …" button
-    // handles the chain afterwards, where declining costs nothing.
+    // already approved. Connect first; nothing here needs a particular
+    // network, and the one place it matters — depositing — carries the chain
+    // id on the transaction itself, so the wallet asks then.
     connect(
       { connector: target },
       {
@@ -189,11 +185,12 @@ export function Masthead() {
               customer was the habit this product set out to break. The
               inspection pages that genuinely need a chain carry their own
               control. */}
-          {wrongChain ? (
-            <button className="c-wallet warn" onClick={() => switchChain({ chainId: chain.id })}>
-              Switch to {chain.name}
-            </button>
-          ) : isConnected ? (
+          {/* No "switch network" prompt either. The trading account signs on
+              every chain against that chain's own RPC, so whatever network the
+              wallet happens to be on is irrelevant to trading. A deposit does
+              need one, and carries it on the transaction, so the wallet raises
+              it there rather than this bar demanding it up front. */}
+          {isConnected ? (
             <button className="c-wallet" onClick={() => disconnect()} title="Disconnect">
               <span className="mono">{addr(address!)}</span>
             </button>

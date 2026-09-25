@@ -118,3 +118,36 @@ export function landedNote(steps: WithdrawalStep[], done: number): string {
   if (done >= steps.length) return `All ${steps.length} sent: ${landed}.`;
   return `${done} of ${steps.length} sent: ${landed}. The rest is still in the trading account.`;
 }
+
+/** Where a deposit will come from, and what the wallet holds there. */
+export type DepositSource = { chain: ChainConfig; token: Token; balance: bigint };
+
+/**
+ * Which chain a deposit leaves from.
+ *
+ * Nobody picks this. The wallet holds dollars somewhere — usually one place —
+ * and the deposit should leave from wherever it holds the most, because that
+ * is the only answer that does not require the customer to know which of three
+ * dollars they own. Once the money is in the trading account the router moves
+ * it as needed, so the choice here costs nothing later.
+ *
+ * `reachable` is the wallet's limit, not ours: an app can only ask a wallet for
+ * a chain it configured, so a chain missing from that list cannot be sent from
+ * here however much it holds.
+ */
+export function depositSource(
+  holdings: { chain: ChainKey; token: Token; raw: string }[],
+  reachable: ChainKey[],
+): DepositSource | null {
+  const candidates = CHAIN_LIST.filter((c) => reachable.includes(c.key)).map((chain) => ({
+    chain,
+    token: chain.usd,
+    balance: BigInt(
+      holdings.find((h) => h.chain === chain.key && h.token.symbol === chain.usd.symbol)?.raw ?? '0',
+    ),
+  }));
+  if (candidates.length === 0) return null;
+  // Ties go to the earlier chain in CHAIN_LIST, which keeps the answer stable
+  // across reloads rather than flipping with whatever order a read came back in.
+  return candidates.reduce((best, c) => (c.balance > best.balance ? c : best));
+}

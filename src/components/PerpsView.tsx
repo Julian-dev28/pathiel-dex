@@ -3,12 +3,17 @@
 import { useEffect, useState } from 'react';
 import type { PerpRow } from '@/lib/perps';
 import { bps, pct } from '@/lib/format';
-import { useChain } from './ChainProvider';
-import { ChainTabs } from './ChainTabs';
+import { CHAINS, type ChainKey } from '@/lib/chain';
 import { PerpTicket } from './PerpTicket';
 import { Card, Answer, Answers, Reveal, Chip, Empty, ErrorNote, Loading, PageHead } from './ui';
 
-type Payload = { chain: string; quotedAt: number; stockMarkets: number; rows: PerpRow[] };
+type Payload = {
+  quotedAt: number;
+  /** Which chain gave each asset its buy price. Absent when nothing quoted. */
+  spotChain: Record<string, ChainKey>;
+  stockMarkets: number;
+  rows: PerpRow[];
+};
 
 const usd = (v: number) => `$${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
 const millions = (v: number) => `$${(v / 1e6).toFixed(1)}m`;
@@ -18,24 +23,25 @@ const marketKey = (r: PerpRow) => `${r.dex}:${r.symbol}`;
 /**
  * Perps.
  *
- * The same company priced twice: by a pool on the selected chain, and by an
- * oracle on a perp venue. The basis between them is the only figure here that
- * needs both, which is why the two prices sit in adjacent columns — and why the
- * column headers, not a footnote, say where each one comes from.
+ * The same company priced twice: by an oracle on a perp venue, and by the
+ * cheapest pool this router can reach for it. The buy side names no chain,
+ * because a buyer does not pick one — the router does, at the moment of the
+ * trade, and quoting one chain here would compare the mark against a price
+ * nobody would have been given. The chain that won is shown beside the price
+ * as a fact about the quote, not a control.
  */
 export function PerpsView() {
-  const { chain } = useChain();
   const [data, setData] = useState<Payload | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // The ticket follows a market, not a row: kept as a key so it survives the
-  // re-quote that a chain switch triggers underneath it.
+  // The ticket follows a market, not a row: the same ticker on two dexes is two
+  // markets, and a re-quote must not move the ticket to the other one.
   const [picked, setPicked] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setData(null);
     setError(null);
-    fetch(`/api/perps?chain=${chain.key}`, { cache: 'no-store' })
+    fetch('/api/perps', { cache: 'no-store' })
       .then((r) => r.json())
       .then((body) => {
         if (cancelled) return;
@@ -46,7 +52,7 @@ export function PerpsView() {
     return () => {
       cancelled = true;
     };
-  }, [chain.key]);
+  }, []);
 
   const priced = data ? data.rows.filter((r) => r.spotBuyUsd !== null).length : 0;
   // Listed here, but the quote did not answer. Counted apart from the absent
@@ -58,10 +64,8 @@ export function PerpsView() {
     <>
       <PageHead
         title="Perps"
-        lede={`Stock perps on Hyperliquid, beside what the same asset costs to buy outright wherever this router lists it. Where both sides exist on ${chain.name}, the gap between them is the third column.`}
+        lede="Stock perps on Hyperliquid, beside the cheapest this router can buy the same asset outright anywhere it routes. Where both sides exist, the gap between them is the third column."
       />
-
-      <ChainTabs />
 
       {error && (
         <Card title="Perps">
@@ -87,19 +91,19 @@ export function PerpsView() {
               note={`${data.stockMarkets} stock perps trade on xyz; the rest of that book is not listed for spot by this router on any chain`}
             />
             <Answer
-              label={`Priced on ${chain.name}`}
+              label="With a buy price"
               value={priced}
               note={
                 unavailable > 0
-                  ? `${unavailable} could not be quoted just now; the rest are listed on another chain, or on none`
-                  : 'the others are listed on another chain, or on none'
+                  ? `${unavailable} could not be quoted just now; the rest this router lists no pool for anywhere`
+                  : 'the rest this router lists no pool for anywhere'
               }
               tone={unavailable > 0 ? 'warn' : undefined}
             />
           </Answers>
 
           {data.rows.length === 0 ? (
-            <Empty>No perp market here matches an asset this router lists.</Empty>
+            <Empty>No perp market matches an asset this router lists.</Empty>
           ) : (
             <div className="c-scroll">
               <table className="c-table">
@@ -107,7 +111,7 @@ export function PerpsView() {
                   <tr>
                     <th>Asset</th>
                     <th className="num">Perp mark</th>
-                    <th className="num">Buy on {chain.name}</th>
+                    <th className="num">Cheapest buy</th>
                     <th className="num">Perp vs buy</th>
                     <th className="num">Funding / yr</th>
                     <th className="num">Open interest</th>
@@ -132,11 +136,16 @@ export function PerpsView() {
                       <td className="num mono">{usd(r.markUsd)}</td>
                       <td className="num mono">
                         {r.spotBuyUsd !== null ? (
-                          usd(r.spotBuyUsd)
+                          <>
+                            {usd(r.spotBuyUsd)}{' '}
+                            {data.spotChain[r.symbol] && (
+                              <Chip tone="mut">{CHAINS[data.spotChain[r.symbol]].name}</Chip>
+                            )}
+                          </>
                         ) : r.spotStatus === 'unavailable' ? (
-                          // Listed here; the quote did not come back. Saying
-                          // "not listed" would be a claim about the chain.
-                          <span title="listed here, but the quote did not come back">…</span>
+                          // Listed somewhere; no chain's quote came back. Saying
+                          // "not listed" would be a claim the router cannot make.
+                          <span title="listed, but no quote came back">…</span>
                         ) : (
                           '—'
                         )}
@@ -177,13 +186,16 @@ export function PerpsView() {
             </p>
             <p>
               <strong>An em dash is an absence, a dotted line is a failure.</strong> An em dash
-              means this router lists no pool for the asset on {chain.name}. An ellipsis means it
-              does and the quote did not come back — a cold start, a rate limit — which is not a
-              statement about the chain and clears on a reload. Neither has a buy price to compare
-              the mark against —
-              switching the chain in the masthead re-quotes the column against a different set of
-              pools. The price is quoted by selling $1,000 of {chain.usd.symbol} into the asset, so
-              a larger trade would walk further up the book and read worse.
+              means this router lists no pool for the asset on any chain. An ellipsis means it lists
+              one and no chain&rsquo;s quote came back — a cold start, a rate limit — which clears
+              on a reload. Neither has a buy price to compare the mark against.
+            </p>
+            <p>
+              <strong>The chip beside a price is the chain that won it</strong>, not a chain you
+              chose: every listing is priced and the cheapest is shown, because that is the one the
+              router would send the money to. The price is quoted by selling $1,000 of that
+              chain&rsquo;s dollar into the asset, so a larger trade would walk further up the book
+              and read worse.
             </p>
             <p>
               Every read in this table is public and unauthenticated on both sides. The ticket

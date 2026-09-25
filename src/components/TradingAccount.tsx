@@ -1,26 +1,19 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import {
-  useAccount,
-  useChainId,
-  useConfig,
-  useSendTransaction,
-  useSignMessage,
-  useSwitchChain,
-} from 'wagmi';
+import { useAccount, useConfig, useSendTransaction, useSignMessage } from 'wagmi';
 import { createPublicClient, createWalletClient, http, type Hex } from 'viem';
-import { CHAINS, type ChainConfig } from '@/lib/chain';
+import { CHAINS, CHAIN_LIST, type ChainConfig } from '@/lib/chain';
 import { addr, sig, toBase } from '@/lib/format';
 import type { AccountBalances } from '@/lib/balances';
 import { ACCOUNT_DISCLOSURES, accountMessage } from '@/lib/account/derive';
 import { LEGAL_VERSION } from '@/lib/legal';
 import { acceptTerms, acceptedVersion } from '@/lib/terms';
 import { fundGas, fundToken, type AccountStatus } from '@/lib/account/funding';
-import { useChain } from './ChainProvider';
 import { useTradingAccount } from './AccountProvider';
 import {
   accountStatuses,
+  depositSource,
   fundingNote,
   fundingState,
   landedNote,
@@ -63,9 +56,6 @@ export function TradingAccount() {
   const { address: owner, isConnected } = useAccount();
   const { account, address: derived, unlock, lock } = useTradingAccount();
   const { signMessageAsync } = useSignMessage();
-  const { chain } = useChain();
-  const walletChainId = useChainId();
-  const { switchChain } = useSwitchChain();
   const { sendTransactionAsync } = useSendTransaction();
   const config = useConfig();
 
@@ -74,10 +64,12 @@ export function TradingAccount() {
 
   const [held, setHeld] = useState<AccountBalances | null>(null);
   const [heldError, setHeldError] = useState<string | null>(null);
+  /** What the owner's own wallet holds. Read to answer where a deposit leaves
+   *  from, which is not a question the customer should be asked. */
+  const [wallet, setWallet] = useState<AccountBalances | null>(null);
   const [reload, setReload] = useState(0);
   const refresh = () => setReload((n) => n + 1);
 
-  const [symbol, setSymbol] = useState('');
   const [amount, setAmount] = useState('');
   const [funding, setFunding] = useState(false);
   const [fundError, setFundError] = useState<string | null>(null);
@@ -104,6 +96,31 @@ export function TradingAccount() {
     };
   }, [derived, reload]);
 
+  // The owner's side of the same read. Failing is not worth reporting: it only
+  // costs the deposit card its "you hold X here" note.
+  useEffect(() => {
+    if (!owner) return;
+    let cancelled = false;
+    fetch(`/api/balances?address=${owner}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((b) => !cancelled && b && !b.error && setWallet(b as AccountBalances))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [owner, reload]);
+
+  /**
+   * Whether this person has accepted the current terms.
+   *
+   * Read once on mount rather than during render: the value lives in browser
+   * storage, and reading it while rendering makes the server and the client
+   * disagree about what to draw.
+   */
+  const [accepted, setAccepted] = useState<string | null>(null);
+  useEffect(() => setAccepted(acceptedVersion()), []);
+  const termsCurrent = accepted === LEGAL_VERSION;
+
   if (!isConnected || !owner) {
     return (
       <>
@@ -120,17 +137,6 @@ export function TradingAccount() {
       </>
     );
   }
-
-  /**
-   * Whether this person has accepted the current terms.
-   *
-   * Read once on mount rather than during render: the value lives in browser
-   * storage, and reading it while rendering makes the server and the client
-   * disagree about what to draw.
-   */
-  const [accepted, setAccepted] = useState<string | null>(null);
-  useEffect(() => setAccepted(acceptedVersion()), []);
-  const termsCurrent = accepted === LEGAL_VERSION;
 
   const onSignIn = async () => {
     setSigning(true);
@@ -263,17 +269,25 @@ export function TradingAccount() {
       )
     : null;
 
-  const token = chain.tokens.find((t) => t.symbol === symbol) ?? chain.usd;
-  const amountIn = toBase(amount, token);
-  const wrongChain = walletChainId !== chain.id;
-  const canFund = reachable(chain);
+  // Where a deposit leaves from is read, not asked: the wallet holds dollars
+  // somewhere, and once they are in the trading account the router moves them
+  // to whichever chain the trade wants.
+  const source = depositSource(
+    wallet?.spot.assets.flatMap((a) => a.holdings) ?? [],
+    config.chains.map((c) => c.id).flatMap((id) => {
+      const match = CHAIN_LIST.find((c) => c.id === id);
+      return match ? [match.key] : [];
+    }),
+  );
+  const amountIn = source ? toBase(amount, source.token) : 0n;
+  const short = source !== null && amountIn > source.balance;
 
   const fundLabel = (): string => {
-    if (!canFund) return `This page cannot ask your wallet for ${chain.name}`;
-    if (wrongChain) return `Switch your wallet to ${chain.name}`;
+    if (!source) return 'No configured chain to send from';
     if (funding) return 'Confirm in your wallet…';
-    if (amountIn <= 0n) return 'Enter an amount to send';
-    return `Send ${amount} ${token.symbol} to ${addr(derived)}`;
+    if (amountIn <= 0n) return 'Enter an amount to deposit';
+    if (short) return `Your wallet holds ${sig(source.balance, source.token, 2)} ${source.token.symbol}`;
+    return `Deposit ${amount} ${source.token.symbol} from ${source.chain.name}`;
   };
 
   return (
@@ -340,19 +354,17 @@ export function TradingAccount() {
                 {stranded && (
                   <Suggest
                     tone="warn"
+                    // No switch step. `sendTransactionAsync` carries the
+                    // chain id, so the wallet asks for the network itself as
+                    // part of the send rather than making this page a place
+                    // where you first pick a chain and then act on it.
                     action={
-                      !reachable(cfg)
-                        ? undefined
-                        : walletChainId !== cfg.id
-                          ? `Switch to ${cfg.name}`
-                          : `Send ${nativeText(status.shortfall, native)}`
+                      reachable(cfg) ? `Send ${nativeText(status.shortfall, native)}` : undefined
                     }
                     onAction={
-                      !reachable(cfg)
-                        ? undefined
-                        : walletChainId !== cfg.id
-                          ? () => switchChain({ chainId: cfg.id })
-                          : () => fromOwner(fundGas(cfg, derived, status.shortfall), cfg.id)
+                      reachable(cfg)
+                        ? () => fromOwner(fundGas(cfg, derived, status.shortfall), cfg.id)
+                        : undefined
                     }
                   >
                     <strong>This account cannot move anything on {cfg.name}.</strong> Every
@@ -399,32 +411,25 @@ export function TradingAccount() {
         )}
       </Card>
 
-      <Card
-        title={`Move money in — ${chain.name}`}
-        step={3}
-        meta={<Chip tone="mut">from {addr(owner)}</Chip>}
-      >
+      <Card title="Deposit dollars" step={3} meta={<Chip tone="mut">from {addr(owner)}</Chip>}>
         <p className="c-empty">
-          An ordinary transfer from your wallet to the address above, on the chain selected in the
-          masthead. Nothing here takes custody of it: it lands in an account only your signature
-          can derive.
+          An ordinary transfer from your wallet to the address above. Nothing here takes custody of
+          it: it lands in an account only your signature can derive. You do not pick a chain — it
+          leaves from wherever your wallet holds dollars, and the router moves them to whichever
+          chain a trade turns out to want.
         </p>
 
-        <div className="c-slot-label">Token</div>
-        <div className="c-controls">
-          <select
-            className="c-input"
-            value={token.symbol}
-            onChange={(e) => setSymbol(e.target.value)}
-            aria-label={`Token to send to the trading account on ${chain.name}`}
-          >
-            {chain.tokens.map((t) => (
-              <option key={t.address} value={t.symbol}>
-                {t.symbol} — {t.name}
-              </option>
-            ))}
-          </select>
-        </div>
+        {source && (
+          <Answers>
+            <Answer
+              label="Leaving from"
+              value={source.chain.name}
+              size="sm"
+              note={`Your wallet holds ${sig(source.balance, source.token, 2)} ${source.token.symbol} there${source.balance === 0n ? ' — the most of any chain this page can send from' : ''}.`}
+              tone={source.balance > 0n ? 'good' : 'mut'}
+            />
+          </Answers>
+        )}
 
         <div className="c-slot-label" style={{ marginTop: 14 }}>
           Amount
@@ -436,41 +441,46 @@ export function TradingAccount() {
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
             placeholder="0"
-            aria-label={`Amount of ${token.symbol} to send`}
+            aria-label="Dollars to deposit into the trading account"
           />
-          <span className="mono">{token.symbol}</span>
+          <span className="mono">{source?.token.symbol ?? 'USD'}</span>
         </div>
 
         <button
           className="c-go"
           type="button"
           onClick={() =>
-            wrongChain
-              ? switchChain({ chainId: chain.id })
-              : fromOwner(fundToken(chain, token, derived, amountIn), chain.id)
+            source && fromOwner(fundToken(source.chain, source.token, derived, amountIn), source.chain.id)
           }
-          disabled={!canFund || funding || (!wrongChain && amountIn <= 0n)}
+          disabled={!source || funding || amountIn <= 0n || short}
         >
           {fundLabel()}
         </button>
 
-        {!canFund && (
-          <p className="c-empty" style={{ marginTop: 10 }}>
-            Send to the address above from your wallet directly instead. Withdrawing from{' '}
-            {chain.name} still works here — that is signed by the account itself, not by your
-            wallet.
-          </p>
-        )}
         {fundError && <ErrorNote>{fundError}</ErrorNote>}
-        {fundHash && (
+        {fundHash && source && (
           <div className="c-tx ok">
             <span>✓ Sent</span>
-            <a className="mono" href={`${chain.explorer}/tx/${fundHash}`} target="_blank" rel="noreferrer">
+            <a
+              className="mono"
+              href={`${source.chain.explorer}/tx/${fundHash}`}
+              target="_blank"
+              rel="noreferrer"
+            >
               {addr(fundHash)}
             </a>
           </div>
         )}
+        <Reveal summary="What if my dollars are on a chain this page cannot send from?">
+          <p>
+            Send them to the address above from your wallet directly — it is the same address on
+            every chain here. Withdrawing works from all of them regardless: that is signed by the
+            account itself rather than by your wallet, so it does not depend on what this page can
+            ask your wallet for.
+          </p>
+        </Reveal>
       </Card>
+
     </>
   );
 }

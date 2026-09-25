@@ -7,20 +7,32 @@ import './router.css';
 import './focus.css';
 
 const DESCRIPTION =
-  'Quotes every major Robinhood Chain and Base venue directly from pool state, solves the optimal split across them, and executes through the venues own audited routers. No aggregator API, no keys.';
+  'One account, one deposit, three chains. Deposit dollars once and buy tokenised stocks on Robinhood Chain, Base or X Layer without choosing between them: the router prices every chain, crosses when it pays to, and executes through the venues own audited routers. Stock perps too. No aggregator API, no custody, no keys held here.';
 
 export const metadata: Metadata = {
   metadataBase: new URL('https://pathiel-dex.vercel.app'),
   title: {
-    default: 'PATHIEL DEX — on-chain route solver for Robinhood Chain and Base',
+    default: 'PATHIEL — one account for stocks on Robinhood Chain, Base and X Layer',
     template: '%s — PATHIEL DEX',
   },
   description: DESCRIPTION,
   applicationName: 'PATHIEL DEX',
-  keywords: ['Robinhood Chain', 'Base', 'DEX', 'router', 'Uniswap', 'Aerodrome', 'swap', 'DeFi'],
+  keywords: [
+    'Robinhood Chain',
+    'Base',
+    'X Layer',
+    'tokenised stocks',
+    'stock perps',
+    'DEX',
+    'router',
+    'Uniswap',
+    'Aerodrome',
+    'swap',
+    'DeFi',
+  ],
   openGraph: {
     type: 'website',
-    title: 'PATHIEL DEX — on-chain route solver for Robinhood Chain and Base',
+    title: 'PATHIEL — one account for stocks on Robinhood Chain, Base and X Layer',
     description: DESCRIPTION,
     siteName: 'PATHIEL DEX',
   },

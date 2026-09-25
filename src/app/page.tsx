@@ -1,20 +1,15 @@
 import { BuyPanel } from '@/components/BuyPanel';
-import { Terminal } from '@/components/Terminal';
 
 /**
- * Buying first, the router underneath it.
+ * Buying, and nothing else.
  *
- * Most people arriving here want an asset for an amount of dollars and have no
- * view on which chain that should happen on — so that is the form they meet.
- * The pair-by-pair terminal stays below for anyone who does have a view, and
- * because it is the thing that proves the quote: every figure the panel above
- * acts on comes from the same routing it shows.
+ * An asset and an amount of dollars is the whole of what someone arriving here
+ * has to say. The pair-by-pair terminal used to sit underneath this panel, but
+ * a terminal is a thing you point at a chain, and leaving it here meant the
+ * first screen still had a chain on it — which is the one thing this product
+ * exists to take away. It moved to the tools page, where picking a pair and a
+ * chain is the stated job.
  */
 export default function Page() {
-  return (
-    <>
-      <BuyPanel />
-      <Terminal />
-    </>
-  );
+  return <BuyPanel />;
 }

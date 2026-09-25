@@ -9,7 +9,7 @@ import { useChain } from './ChainProvider';
 import { ChainTabs } from './ChainTabs';
 import { Card, Answer, Answers, Reveal, Empty, PageHead } from './ui';
 
-/** The backtest for the chain picked in the masthead. Every chain's aggregate
+/** The backtest for the chain picked in the tabs below. Every chain's aggregate
  *  is computed on the server; switching only chooses which one to show. */
 export function BacktestView({ byChain }: { byChain: Record<ChainKey, Aggregate> }) {
   const { chain } = useChain();

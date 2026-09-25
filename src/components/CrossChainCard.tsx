@@ -164,9 +164,9 @@ export function CrossChainCard({
               <Chip tone="good">{edgeBps.toFixed(0)}bp better</Chip>{' '}
               on {CHAINS[best.chain].name} than staying here, after paying{' '}
               {best.bridge?.costBps === null ? 'an unknown cost' : `${best.bridge?.costBps.toFixed(0) ?? 0}bp`}{' '}
-              to cross. Gas is not counted on either side. Switch the chain in the masthead to trade
-              it there; the crossing itself is a bridge deposit you sign, and nothing here sends it
-              for you.
+              to cross. Gas is not counted on either side. The <a href="/">buy panel</a> takes this
+              route without being asked — it prices every chain and crosses for you. This card is the
+              same arithmetic shown for one pair you named.
             </p>
           ) : elsewhere ? (
             <p className="c-empty" style={{ marginTop: 12 }}>

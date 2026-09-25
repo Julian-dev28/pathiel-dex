@@ -12,6 +12,7 @@ import { CHAINS, bySymbol } from '@/lib/chain';
 import { GAS_FLOOR, statusFor } from '@/lib/account/funding';
 import {
   accountStatuses,
+  depositSource,
   fundingNote,
   fundingState,
   landedNote,
@@ -163,5 +164,51 @@ describe('formatting a gas balance', () => {
     for (const [chain, floor] of Object.entries(GAS_FLOOR)) {
       expect(nativeText(floor, 'X'), `${chain} floor renders as zero`).not.toBe('0 X');
     }
+  });
+});
+
+describe('where a deposit leaves from', () => {
+  const holding = (chain: 'base' | 'xlayer' | 'robinhood', symbol: string, raw: string) => ({
+    chain,
+    token: bySymbol(symbol, chain),
+    raw,
+  });
+
+  it('leaves from wherever the wallet holds the most dollars', () => {
+    const source = depositSource(
+      [holding('base', 'USDC', '10000000'), holding('xlayer', 'USDG', '250000000')],
+      ['base', 'xlayer', 'robinhood'],
+    );
+    expect(source?.chain.key).toBe('xlayer');
+    expect(source?.balance).toBe(250000000n);
+  });
+
+  // The wallet's limit, not a preference: a chain the app never configured
+  // cannot be sent from however much sits there.
+  it('ignores a chain the wallet was never configured with', () => {
+    const source = depositSource(
+      [holding('base', 'USDC', '10000000'), holding('xlayer', 'USDG', '250000000')],
+      ['base'],
+    );
+    expect(source?.chain.key).toBe('base');
+  });
+
+  // Nothing held anywhere still has to name a chain, or the panel has no
+  // address to send to and no amount field to enable.
+  it('still names a chain when the wallet holds no dollars', () => {
+    const source = depositSource([], ['base', 'xlayer']);
+    expect(source?.balance).toBe(0n);
+    expect(source?.token.symbol).toBe(CHAINS[source!.chain.key].usd.symbol);
+  });
+
+  it('has nothing to offer when no chain is reachable', () => {
+    expect(depositSource([holding('base', 'USDC', '1')], [])).toBeNull();
+  });
+
+  // Each chain has one dollar the router spends from — USDC on Base, USDG on
+  // X Layer — and a balance in anything else is not it, however dollar-like.
+  it('does not count a holding that is not the chain\'s own dollar', () => {
+    expect(depositSource([holding('base', 'WETH', '1000000000000000000')], ['base'])?.balance).toBe(0n);
+    expect(depositSource([holding('xlayer', 'USDC', '250000000')], ['xlayer'])?.balance).toBe(0n);
   });
 });
