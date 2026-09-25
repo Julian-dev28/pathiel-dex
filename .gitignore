@@ -15,3 +15,7 @@ next-env.d.ts
 # Backtest output is committed on purpose (see src/lib/dataset.ts); only the
 # ad-hoc bench snapshot is not.
 .env*
+
+# Notes that must not leave this machine: the beta invite codes live in
+# BETA_CODES.local.md, and only their hashes are ever deployed.
+*.local.md
