@@ -3,7 +3,14 @@
 import { useEffect, useState, useRef } from 'react';
 import { useAccount, useSignTypedData } from 'wagmi';
 import type { AccountBalances, PerpAccount } from '@/lib/balances';
-import type { PerpRow } from '@/lib/perps';
+import { STOCK_PERP_DEX, type PerpRow } from '@/lib/perps';
+import { CHAINS } from '@/lib/chain';
+import {
+  fundMargin,
+  quoteMarginFunding,
+  type MarginFunding,
+} from '@/lib/account/margin';
+import type { SentStep } from '@/lib/account/trade';
 import { prepareOrder, submitOrder, type PreparedOrder } from '@/lib/perp-browser';
 import { useTradingAccount } from './AccountProvider';
 import { Card, Answer, Answers, Chip, Empty, ErrorNote, Reveal, Segmented, Suggest } from './ui';
@@ -69,6 +76,15 @@ export function PerpTicket({ row }: { row: PerpRow | null }) {
   const [error, setError] = useState<string | null>(null);
   const [response, setResponse] = useState<unknown>(null);
   const [placedAt, setPlacedAt] = useState(0);
+
+  // Funding margin out of the account's own dollars. Held apart from the order
+  // state: a top-up is not an order, and a failed one must not read as a
+  // rejected trade.
+  const [topUp, setTopUp] = useState('100');
+  const [funding, setFunding] = useState<MarginFunding | null>(null);
+  const [fundingBusy, setFundingBusy] = useState(false);
+  const [fundingError, setFundingError] = useState<string | null>(null);
+  const [funded, setFunded] = useState<SentStep[] | null>(null);
 
   // The margin account is read from the same endpoint the account page uses;
   // re-read after a fill, because the position it shows is the thing that just
@@ -270,14 +286,89 @@ export function PerpTicket({ row }: { row: PerpRow | null }) {
           />
         </Answers>
 
-        {readMargin && marginUsd <= 0 && (
-          <Suggest tone="warn">
-            <strong>There is no collateral here to trade with.</strong> A perp on{' '}
-            {dexName(row.dex)} settles in USDC held in that dex&rsquo;s own margin account — USDC in
-            your wallet on Base or Robinhood Chain cannot back it. A bridge deposit can deliver
-            straight into the {dexName(row.dex)} margin account; until it lands, every order here
-            is rejected.
-          </Suggest>
+        {readMargin && signer && (
+          <div className={marginUsd <= 0 ? undefined : 'c-secondary'}>
+            {marginUsd <= 0 && (
+              <Suggest tone="warn">
+                <strong>There is no collateral here to trade with.</strong> A perp on{' '}
+                {dexName(row.dex)} settles in USDC held in that dex&rsquo;s own margin account —
+                dollars sitting on Base, Robinhood Chain or X Layer cannot back it. Move some across
+                below and every order here starts working; until it lands, they are all rejected.
+              </Suggest>
+            )}
+
+            <div className="c-slot-label">
+              {marginUsd <= 0 ? 'Fund this margin account' : 'Add margin'}
+            </div>
+            <div className="c-controls">
+              <input
+                className="c-input"
+                inputMode="decimal"
+                value={topUp}
+                onChange={(e) => {
+                  setTopUp(e.target.value);
+                  setFunding(null);
+                  setFunded(null);
+                }}
+                aria-label={`Dollars to move into the ${dexName(row.dex)} margin account`}
+              />
+              <button
+                className="c-ghost"
+                type="button"
+                disabled={fundingBusy}
+                onClick={() => {
+                  setFundingError(null);
+                  setFundingBusy(true);
+                  quoteMarginFunding(signer.address, row.dex === STOCK_PERP_DEX ? 'xyz' : 'core', Number(topUp))
+                    .then(setFunding)
+                    .catch((e) => setFundingError(e instanceof Error ? e.message : 'could not price that'))
+                    .finally(() => setFundingBusy(false));
+                }}
+              >
+                {fundingBusy ? 'Pricing…' : 'Price the transfer'}
+              </button>
+            </div>
+
+            {funding && (
+              <>
+                <p className="c-empty" style={{ marginTop: 10 }}>
+                  ${funding.usd.toFixed(2)} from {CHAINS[funding.from].name} arrives as $
+                  {funding.arrivingUsd.toFixed(2)} of margin, in about {funding.quote.etaSeconds}s.
+                  The ${(funding.usd - funding.arrivingUsd).toFixed(2)} difference is close to a flat
+                  fee rather than a percentage, so one transfer costs far less than three.
+                </p>
+                <button
+                  className="c-go"
+                  type="button"
+                  disabled={fundingBusy}
+                  onClick={() => {
+                    setFundingBusy(true);
+                    setFundingError(null);
+                    fundMargin(signer, funding)
+                      .then((sent) => {
+                        setFunded(sent);
+                        setFunding(null);
+                        setPlacedAt(Date.now());
+                      })
+                      .catch((e) =>
+                        setFundingError(e instanceof Error ? e.message : 'the transfer failed'),
+                      )
+                      .finally(() => setFundingBusy(false));
+                  }}
+                >
+                  Move ${funding.usd.toFixed(2)} into {dexName(row.dex)} margin
+                </button>
+              </>
+            )}
+
+            {funded && (
+              <div className="c-tx ok">
+                <span>✓ Sent — Hyperliquid credits it when the solver delivers</span>
+                <span className="mono">{funded[funded.length - 1]?.hash.slice(0, 10)}…</span>
+              </div>
+            )}
+            {fundingError && <ErrorNote>{fundingError}</ErrorNote>}
+          </div>
         )}
 
         {positionSize !== 0 && (
