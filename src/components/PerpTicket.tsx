@@ -276,7 +276,7 @@ export function PerpTicket({ row }: { row: PerpRow | null }) {
         : await signTypedDataAsync(
             prepared.typedData as unknown as Parameters<typeof signTypedDataAsync>[0],
           );
-      await submitOrder(prepared.finalize(signature) as never);
+      await submitOrder(prepared.finalize(signature));
       setPulled(
         `${usd(prepared.summary.usd)} on its way to ${addr(address)} — ${usd(prepared.summary.arrivingUsd)} after the fee`,
       );

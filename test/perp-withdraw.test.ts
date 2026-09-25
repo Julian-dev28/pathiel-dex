@@ -31,6 +31,20 @@ describe('withdrawing margin', () => {
     expect(action.amount).toBe('12.5');
   });
 
+  // The amount is a string the exchange hashes, and the trailing-zero strip
+  // that makes it one runs on the whole string: a round hundred must not come
+  // out as a dollar.
+  it.each([
+    [100, '100'],
+    [20, '20'],
+    [12.5, '12.5'],
+    [100.5, '100.5'],
+    [3.0001, '3.0001'],
+  ])('writes $%s as "%s"', (usd, expected) => {
+    const { action } = prepareWithdrawal(OWNER, usd).finalize(`0x${'11'.repeat(65)}`);
+    expect(action.amount).toBe(expected);
+  });
+
   it('signs the same time it posts as the nonce', () => {
     vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
     const prepared = prepareWithdrawal(OWNER, 20);

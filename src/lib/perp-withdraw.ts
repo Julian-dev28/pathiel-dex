@@ -29,6 +29,7 @@
 
 import type { Address } from 'viem';
 import { SIGNATURE_CHAIN_ID, splitSignature } from './hl-sign';
+import type { ExchangeRequest } from './perp-order';
 
 /** What Hyperliquid deducts from a withdrawal, in dollars. */
 export const WITHDRAW_FEE_USD = 1;
@@ -46,11 +47,8 @@ const WITHDRAW_FIELDS = [
   { name: 'time', type: 'uint64' },
 ] as const;
 
-export type WithdrawRequest = {
-  action: Record<string, unknown>;
-  nonce: number;
-  signature: { r: `0x${string}`; s: `0x${string}`; v: number };
-};
+/** Structurally an exchange request like any other: the exchange takes one shape. */
+export type WithdrawRequest = ExchangeRequest;
 
 export type PreparedWithdrawal = {
   summary: { usd: number; arrivingUsd: number; destination: Address };
