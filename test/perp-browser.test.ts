@@ -55,8 +55,11 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/** Sign a prepared order the way the wallet will, and assemble the request. */
-const walletSign = async (prepared: Awaited<ReturnType<typeof prepareOrder>>) =>
+/** Sign a prepared order or cancel the way the wallet will, and assemble it. */
+const walletSign = async (prepared: {
+  typedData: unknown;
+  finalize: (sig: Hex) => { action: unknown; nonce: number; signature: unknown };
+}) =>
   prepared.finalize(
     // The cast is what a wallet does for free: the contract types the payload
     // loosely so any signer takes it, and viem wants its own narrow shape.

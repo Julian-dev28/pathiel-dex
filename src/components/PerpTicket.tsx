@@ -11,6 +11,8 @@ import {
   type MarginFunding,
 } from '@/lib/account/margin';
 import type { SentStep } from '@/lib/account/trade';
+import { WITHDRAW_FEE_USD, prepareWithdrawal } from '@/lib/perp-withdraw';
+import { addr } from '@/lib/format';
 import {
   explainExchangeError,
   prepareOrder,
@@ -90,6 +92,11 @@ export function PerpTicket({ row }: { row: PerpRow | null }) {
   const [fundingBusy, setFundingBusy] = useState(false);
   const [fundingError, setFundingError] = useState<string | null>(null);
   const [funded, setFunded] = useState<SentStep[] | null>(null);
+  // Taking it back out. Kept beside funding because they are the same question
+  // asked in two directions, and a product that only knows one of them is a trap.
+  const [pullOut, setPullOut] = useState('');
+  const [pulling, setPulling] = useState(false);
+  const [pulled, setPulled] = useState<string | null>(null);
 
   // The margin account is read from the same endpoint the account page uses;
   // re-read after a fill, because the position it shows is the thing that just
@@ -249,6 +256,41 @@ export function PerpTicket({ row }: { row: PerpRow | null }) {
     }
   };
 
+  /**
+   * Withdraw free margin back to the account that owns it.
+   *
+   * The destination is not a choice: `prepareWithdrawal` builds the payload
+   * around the signer, so this cannot pay anybody else.
+   */
+  const withdrawMargin = async () => {
+    if (!address) return;
+    setPulling(true);
+    setFundingError(null);
+    setPulled(null);
+    try {
+      const prepared = prepareWithdrawal(address, Number(pullOut));
+      const signature = signer
+        ? await signer.signTypedData(
+            prepared.typedData as unknown as Parameters<typeof signer.signTypedData>[0],
+          )
+        : await signTypedDataAsync(
+            prepared.typedData as unknown as Parameters<typeof signTypedDataAsync>[0],
+          );
+      await submitOrder(prepared.finalize(signature) as never);
+      setPulled(
+        `${usd(prepared.summary.usd)} on its way to ${addr(address)} — ${usd(prepared.summary.arrivingUsd)} after the fee`,
+      );
+      setPullOut('');
+      setPlacedAt(Date.now());
+    } catch (e) {
+      setFundingError(
+        e instanceof Error ? explainExchangeError(e.message.split('\n')[0]) : 'the withdrawal failed',
+      );
+    } finally {
+      setPulling(false);
+    }
+  };
+
   /** One line that is always true about what the button will do next. */
   const buttonLabel = (): string => {
     if (!readMargin) return 'Reading your margin…';
@@ -376,6 +418,47 @@ export function PerpTicket({ row }: { row: PerpRow | null }) {
                 <span className="mono">{funded[funded.length - 1]?.hash.slice(0, 10)}…</span>
               </div>
             )}
+
+            {marginUsd > 0 && (
+              <>
+                <div className="c-slot-label" style={{ marginTop: 14 }}>
+                  Take margin back out
+                </div>
+                <div className="c-controls">
+                  <input
+                    className="c-input"
+                    inputMode="decimal"
+                    value={pullOut}
+                    onChange={(e) => {
+                      setPullOut(e.target.value);
+                      setPulled(null);
+                    }}
+                    placeholder={account?.withdrawableUsd.toFixed(2) ?? '0'}
+                    aria-label="Dollars to withdraw from Hyperliquid"
+                  />
+                  <button
+                    className="c-ghost"
+                    type="button"
+                    disabled={pulling}
+                    onClick={() => void withdrawMargin()}
+                  >
+                    {pulling ? 'Withdrawing…' : 'Withdraw to this account'}
+                  </button>
+                </div>
+                <p className="c-empty" style={{ marginTop: 8 }}>
+                  Goes to {addr(address!)} — the account that owns it, which is the only destination
+                  this app can send to. Hyperliquid takes ${WITHDRAW_FEE_USD} and a few minutes, and
+                  only {usd(account?.withdrawableUsd ?? 0)} is free to move; the rest is backing
+                  positions.
+                </p>
+                {pulled && (
+                  <div className="c-tx ok">
+                    <span>✓ {pulled}</span>
+                  </div>
+                )}
+              </>
+            )}
+
             {fundingError && <ErrorNote>{fundingError}</ErrorNote>}
           </div>
         )}
