@@ -20,12 +20,19 @@ import { AccountProvider } from '@/components/AccountProvider';
  * this project would then have to hold. For a router whose whole claim is that
  * it depends on nothing but public RPC, that trade is not worth one connector.
  */
+/**
+ * All three chains, because a deposit can only leave from a chain the wallet
+ * was configured with. Leaving X Layer out meant dollars held there could not
+ * be deposited from this page at all, however much the router could do with
+ * them afterwards.
+ */
 export const wagmiConfig = createConfig({
-  chains: [CHAINS.robinhood.viem, CHAINS.base.viem],
+  chains: [CHAINS.robinhood.viem, CHAINS.base.viem, CHAINS.xlayer.viem],
   connectors: [injected()],
   transports: {
     [CHAINS.robinhood.id]: http(CHAINS.robinhood.rpcUrls[0]),
     [CHAINS.base.id]: http(CHAINS.base.rpcUrls[0]),
+    [CHAINS.xlayer.id]: http(CHAINS.xlayer.rpcUrls[0]),
   },
   ssr: true,
 });
