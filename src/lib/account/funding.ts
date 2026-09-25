@@ -40,8 +40,20 @@ const ERC20 = parseAbi(erc20Abi);
  * room for a V4 route's second approval — then ten times over, because a fee
  * floor is a floor and the point of a buffer is the day it is not.
  */
-const GAS_BUDGET = 3_000_000n;
+export const GAS_BUDGET = 3_000_000n;
 const SPIKE_HEADROOM = 10n;
+
+/**
+ * The same figure against a live gas price rather than the chain's fee floor.
+ *
+ * `GAS_FLOOR` has to assume the worst because it is computed without asking the
+ * chain anything, and on a chain whose configured floor is high that assumption
+ * is expensive: it once made the router spend eight dollars buying gas for a
+ * hundred dollar trade. Where a caller can read the gas price — the router can,
+ * before it spends anything — this is the honest number: one full trade cycle,
+ * doubled, so the account is not back buying gas on its next trade.
+ */
+export const gasNeeded = (gasPriceWei: bigint): bigint => gasPriceWei * GAS_BUDGET * 2n;
 
 export const GAS_FLOOR: Record<ChainKey, bigint> = Object.fromEntries(
   Object.values(CHAINS).map((chain) => [

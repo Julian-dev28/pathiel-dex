@@ -23,7 +23,7 @@
 import { createWalletClient, http, type Address, type PrivateKeyAccount } from 'viem';
 import { CHAINS, rpcUrlsFor, type ChainConfig, type ChainKey } from '../chain';
 import { client, type Venue } from '../quote';
-import { GAS_FLOOR } from './funding';
+import { gasNeeded } from './funding';
 import { approvalLabel, approvalTx, buildSwap, pendingApprovals } from '../execute';
 
 /** A transaction this account sent, and what it was for. */
@@ -181,9 +181,17 @@ export async function sendFromAccount(
  *
  * Asked before a trade rather than discovered during one: the answer decides
  * whether the interface offers a button or explains why it cannot.
+ *
+ * Sized against the live gas price, the same way the router sizes the gas it
+ * buys. Two different answers to "can this account act" is how a trade ends up
+ * refused on a chain the router just paid to make usable.
  */
 export async function canAct(account: Address, chainKey: ChainKey): Promise<boolean> {
   const chain = CHAINS[chainKey];
-  const balance = await client(chain).getBalance({ address: account });
-  return balance >= GAS_FLOOR[chainKey];
+  const c = client(chain);
+  const [balance, gasPrice] = await Promise.all([
+    c.getBalance({ address: account }),
+    c.getGasPrice().catch(() => chain.fallbackGasWei),
+  ]);
+  return balance >= gasNeeded(gasPrice);
 }

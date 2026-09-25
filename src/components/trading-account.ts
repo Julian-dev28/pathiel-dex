@@ -9,13 +9,15 @@
  */
 
 import { formatUnits, type Address } from 'viem';
-import { CHAIN_LIST, type ChainConfig, type ChainKey, type Token } from '@/lib/chain';
+import { CHAINS, CHAIN_LIST, type ChainConfig, type ChainKey, type Token } from '@/lib/chain';
 import {
+  canPayGas,
   statusFor,
   withdrawEverything,
   type AccountStatus,
   type Transfer,
 } from '@/lib/account/funding';
+import { micro } from '@/lib/account/plan';
 import { addr, sig } from '@/lib/format';
 
 /**
@@ -150,4 +152,77 @@ export function depositSource(
   // Ties go to the earlier chain in CHAIN_LIST, which keeps the answer stable
   // across reloads rather than flipping with whatever order a read came back in.
   return candidates.reduce((best, c) => (c.balance > best.balance ? c : best));
+}
+
+/** One asset, added up across every chain the account holds it on. */
+export type UnifiedPosition = { asset: string; total: number; chains: ChainKey[] };
+
+/**
+ * The account's dollars as one figure, in millionths.
+ *
+ * Which chain they sit on is the router's business, and showing three balances
+ * where the customer has one is how the old panel made a single account look
+ * like three. The per-chain breakdown is still available below it, for the one
+ * question it answers: whether a chain can pay for its own transactions.
+ */
+export const unifiedDollars = (
+  holdings: { chain: ChainKey; token: Token; raw: string }[],
+): bigint =>
+  holdings
+    .filter((h) => h.token.symbol === CHAINS[h.chain].usd.symbol)
+    .reduce((total, h) => total + micro(BigInt(h.raw), h.token.decimals), 0n);
+
+/**
+ * Positions, added up the same way.
+ *
+ * NVDA on Robinhood Chain and NVDAc on Base are one holding of NVDA. The
+ * amounts are summed as numbers because this figure is only ever displayed —
+ * anything that spends it reads the chain again.
+ */
+export function unifiedPositions(
+  assets: { asset: string; holdings: { chain: ChainKey; token: Token; amount: string }[] }[],
+): UnifiedPosition[] {
+  return assets
+    .map(({ asset, holdings }) => {
+      const real = holdings.filter((h) => h.token.symbol !== CHAINS[h.chain].usd.symbol);
+      return {
+        asset,
+        total: real.reduce((sum, h) => sum + Number(h.amount), 0),
+        chains: real.filter((h) => Number(h.amount) > 0).map((h) => h.chain),
+      };
+    })
+    .filter((p) => p.total > 0)
+    .sort((a, b) => b.total - a.total);
+}
+
+/**
+ * Whether the account is frozen: dollars in it, and no chain it can sign on.
+ *
+ * The router buys its own gas out of the account's dollars, but it has to sign
+ * that purchase somewhere — so an account holding only dollars, on chains with
+ * no native balance at all, cannot start. This is the one gas question the
+ * customer still has to answer, and the only one worth putting in front of them.
+ */
+export const isFrozen = (statuses: AccountStatus[]): boolean =>
+  statuses.every((s) => !canPayGas(s.chain, s.nativeBalance)) &&
+  statuses.some((s) => s.tokens.length > 0);
+
+/**
+ * Which chain to unfreeze first.
+ *
+ * Wherever the most dollars are: once that chain can sign, it can pay for its
+ * own trades and buy gas for the others out of the same dollars. Sending gas to
+ * a chain holding nothing would unfreeze the account on paper and change
+ * nothing about what it can do.
+ */
+export function chainToUnfreeze(statuses: AccountStatus[]): ChainKey {
+  const ranked = statuses
+    .map((s) => ({
+      chain: s.chain,
+      dollars: s.tokens
+        .filter((t) => t.token.symbol === CHAINS[s.chain].usd.symbol)
+        .reduce((total, t) => total + micro(t.balance, t.token.decimals), 0n),
+    }))
+    .sort((a, b) => (b.dollars > a.dollars ? 1 : b.dollars < a.dollars ? -1 : 0));
+  return ranked[0]?.chain ?? CHAIN_LIST[0].key;
 }

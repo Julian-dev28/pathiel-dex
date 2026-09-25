@@ -52,6 +52,21 @@ export type BridgeTarget =
   | { kind: 'chain'; chain: ChainConfig; token: Token }
   | { kind: 'perpMargin'; dex: 'xyz' | 'core' };
 
+/**
+ * A chain's native currency as the bridge names it.
+ *
+ * The zero address is the convention for "not a token, the gas itself", and
+ * this is how an account with dollars and no gas gets unstuck: the solver
+ * delivers native currency it can then pay for its own transactions with.
+ */
+export const nativeCurrency = (chain: ChainConfig): Token => ({
+  chainId: chain.id,
+  address: '0x0000000000000000000000000000000000000000',
+  symbol: chain.viem.nativeCurrency.symbol,
+  name: chain.viem.nativeCurrency.name,
+  decimals: chain.viem.nativeCurrency.decimals,
+});
+
 export type BridgeQuote = {
   from: { chain: ChainKey; symbol: string };
   to: { chain: ChainKey | 'hyperliquid'; symbol: string };
@@ -155,13 +170,19 @@ export function parseBridgeQuote(
  * Returns null rather than throwing when the route is not offered: a chain pair
  * nobody solves is an ordinary answer here, and a caller comparing several
  * routes wants the others even when one is unavailable.
+ *
+ * `EXACT_OUTPUT` asks the other question — *what would it cost to land this
+ * much there* — which is the only way to buy a specific amount of gas without
+ * guessing at a native currency's price. `amount` is then the destination
+ * amount, and `amountInFormatted` is the answer.
  */
 export async function bridgeQuote(
   wallet: Address,
   fromChain: ChainConfig,
   fromToken: Token,
   to: BridgeTarget,
-  amountIn: bigint,
+  amount: bigint,
+  tradeType: 'EXACT_INPUT' | 'EXACT_OUTPUT' = 'EXACT_INPUT',
 ): Promise<BridgeQuote | null> {
   const body = {
     user: wallet,
@@ -170,8 +191,8 @@ export async function bridgeQuote(
     destinationChainId: targetChainId(to),
     originCurrency: fromToken.address,
     destinationCurrency: targetCurrency(to),
-    amount: amountIn.toString(),
-    tradeType: 'EXACT_INPUT',
+    amount: amount.toString(),
+    tradeType,
   };
   const res = await fetch(QUOTE_URL, {
     method: 'POST',
@@ -183,7 +204,7 @@ export async function bridgeQuote(
     (await res.json()) as RelayResponse,
     { chain: fromChain.key, symbol: fromToken.symbol },
     targetLabel(to),
-    amountIn,
+    amount,
   );
 }
 

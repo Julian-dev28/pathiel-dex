@@ -9,12 +9,17 @@ import type { AccountBalances } from '@/lib/balances';
 import { ACCOUNT_DISCLOSURES, accountMessage } from '@/lib/account/derive';
 import { LEGAL_VERSION } from '@/lib/legal';
 import { acceptTerms, acceptedVersion } from '@/lib/terms';
-import { fundGas, fundToken, type AccountStatus } from '@/lib/account/funding';
+import { GAS_FLOOR, fundGas, fundToken, type AccountStatus } from '@/lib/account/funding';
+import { usdOf } from '@/lib/account/plan';
 import { useTradingAccount } from './AccountProvider';
 import {
   accountStatuses,
+  chainToUnfreeze,
   depositSource,
   fundingNote,
+  isFrozen,
+  unifiedDollars,
+  unifiedPositions,
   fundingState,
   landedNote,
   nativeText,
@@ -269,6 +274,14 @@ export function TradingAccount() {
       )
     : null;
 
+  // The account as the customer holds it: one dollar balance and a list of
+  // positions. The per-chain split is a fact about the plumbing and lives below.
+  const dollars = held ? unifiedDollars(held.spot.assets.flatMap((a) => a.holdings)) : null;
+  const positions = held ? unifiedPositions(held.spot.assets) : [];
+  const frozen = statuses !== null && isFrozen(statuses);
+  // Where the dollars are: unfreezing a chain holding nothing changes nothing.
+  const unfreeze = statuses ? CHAINS[chainToUnfreeze(statuses)] : null;
+
   // Where a deposit leaves from is read, not asked: the wallet holds dollars
   // somewhere, and once they are in the trading account the router moves them
   // to whichever chain the trade wants.
@@ -281,13 +294,38 @@ export function TradingAccount() {
   );
   const amountIn = source ? toBase(amount, source.token) : 0n;
   const short = source !== null && amountIn > source.balance;
+  // A deposit of dollars into an account that cannot sign anything leaves the
+  // customer holding money they cannot trade, so the first deposit to a chain
+  // carries gas with it. After that the router buys its own.
+  const gasWith =
+    source && statuses?.find((st) => st.chain === source.chain.key)?.canTrade === false
+      ? GAS_FLOOR[source.chain.key]
+      : 0n;
 
   const fundLabel = (): string => {
     if (!source) return 'No configured chain to send from';
     if (funding) return 'Confirm in your wallet…';
     if (amountIn <= 0n) return 'Enter an amount to deposit';
     if (short) return `Your wallet holds ${sig(source.balance, source.token, 2)} ${source.token.symbol}`;
-    return `Deposit ${amount} ${source.token.symbol} from ${source.chain.name}`;
+    return gasWith > 0n
+      ? `Deposit ${amount} ${source.token.symbol} and a little ${source.chain.viem.nativeCurrency.symbol}`
+      : `Deposit ${amount} ${source.token.symbol} from ${source.chain.name}`;
+  };
+
+  /**
+   * The deposit: dollars, and gas if the account has none there yet.
+   *
+   * Two transactions and so two wallet prompts, sent in that order — the gas
+   * first would leave someone who declines the second with gas and nothing to
+   * trade, which is the less useful half.
+   */
+  const onDeposit = async () => {
+    if (!source) return;
+    await fromOwner(fundToken(source.chain, source.token, derived, amountIn), source.chain.id);
+    if (gasWith > 0n) {
+      await fromOwner(fundGas(source.chain, derived, gasWith), source.chain.id);
+    }
+    refresh();
   };
 
   return (
@@ -319,94 +357,146 @@ export function TradingAccount() {
         </div>
       </Card>
 
-      <Card title="What the account holds" step={2}>
+      <Card
+        title="What the account holds"
+        step={2}
+        meta={
+          dollars === null ? undefined : (
+            <Chip tone={dollars > 0n ? 'good' : 'mut'}>${usdOf(dollars).toFixed(2)} to trade with</Chip>
+          )
+        }
+      >
         {heldError && <ErrorNote onRetry={refresh}>{heldError}</ErrorNote>}
         {!statuses && !heldError && <Loading rows={3} />}
-        {statuses &&
-          statuses.map((status, i) => {
-            const cfg = CHAINS[status.chain];
-            const native = cfg.viem.nativeCurrency.symbol;
-            const state = fundingState(status);
-            const stranded = state === 'needs-gas';
-            return (
-              <div key={status.chain} className={i > 0 ? 'c-secondary' : undefined}>
-                <Answers>
-                  <Answer
-                    label={`${cfg.name} — gas`}
-                    value={nativeText(status.nativeBalance, native)}
-                    size="sm"
-                    tone={state === 'ready' ? 'good' : state === 'empty' ? 'mut' : 'bad'}
-                    note={fundingNote(status, native)}
-                  />
-                </Answers>
 
-                {status.tokens.length > 0 && (
-                  <ul className="c-list">
-                    {status.tokens.map((t) => (
-                      <li key={t.token.address}>
-                        <span className="mut">{t.token.symbol}</span>
-                        <span className="mono">{sig(t.balance, t.token, 6)}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
+        {dollars !== null && (
+          <Answers>
+            <Answer
+              label="Dollars"
+              value={`$${usdOf(dollars).toFixed(2)}`}
+              size="xl"
+              tone={dollars > 0n ? 'good' : 'mut'}
+              note="One balance. The router spends it from whichever chain the trade needs, crossing and buying its own gas on the way."
+            />
+            <Answer
+              label="Positions"
+              value={positions.length}
+              note={
+                positions.length === 0
+                  ? 'nothing held yet'
+                  : positions
+                      .slice(0, 4)
+                      .map((p) => `${p.total.toPrecision(4)} ${p.asset}`)
+                      .join(', ')
+              }
+            />
+          </Answers>
+        )}
 
-                {stranded && (
-                  <Suggest
-                    tone="warn"
-                    // No switch step. `sendTransactionAsync` carries the
-                    // chain id, so the wallet asks for the network itself as
-                    // part of the send rather than making this page a place
-                    // where you first pick a chain and then act on it.
-                    action={
-                      reachable(cfg) ? `Send ${nativeText(status.shortfall, native)}` : undefined
-                    }
-                    onAction={
-                      reachable(cfg)
-                        ? () => fromOwner(fundGas(cfg, derived, status.shortfall), cfg.id)
-                        : undefined
-                    }
-                  >
-                    <strong>This account cannot move anything on {cfg.name}.</strong> Every
-                    transfer and every trade costs {native}, and it holds{' '}
-                    {nativeText(status.nativeBalance, native)}. Until that is topped up, a trade
-                    here would be rejected by the chain rather than by this page.
-                  </Suggest>
-                )}
+        {positions.length > 0 && (
+          <ul className="c-list">
+            {positions.map((p) => (
+              <li key={p.asset}>
+                <span>
+                  {p.asset}{' '}
+                  {p.chains.length > 1 && <Chip tone="mut">{p.chains.length} chains</Chip>}
+                </span>
+                <span className="mono">{p.total.toPrecision(6)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
 
-                {(status.tokens.length > 0 || status.nativeBalance > 0n) && (
-                  <button
-                    className="c-ghost"
-                    type="button"
-                    onClick={() => onWithdraw(cfg, status)}
-                    disabled={run?.busy}
-                  >
-                    Send everything back to {addr(owner)}
-                  </button>
-                )}
+        {frozen && (
+          <Suggest
+            tone="warn"
+            action={
+              unfreeze && reachable(unfreeze)
+                ? `Send ${nativeText(GAS_FLOOR[unfreeze.key], unfreeze.viem.nativeCurrency.symbol)} on ${unfreeze.name}`
+                : undefined
+            }
+            onAction={
+              unfreeze && reachable(unfreeze)
+                ? () => void fromOwner(fundGas(unfreeze, derived, GAS_FLOOR[unfreeze.key]), unfreeze.id)
+                : undefined
+            }
+          >
+            <strong>This account cannot sign anything yet.</strong> It holds dollars but no native
+            currency on any chain, and every transaction — including the one that would buy itself
+            gas — has to be paid for somewhere. Send it a little once, and from then on the router
+            buys its own gas on the other chains out of these dollars.
+          </Suggest>
+        )}
 
-                {run?.chain.key === status.chain && run.steps.length > 0 && (
-                  <div className={`c-tx${run.error || run.busy ? '' : ' ok'}`}>
-                    <span>
-                      {run.busy
-                        ? `Sending ${Math.min(run.done + 1, run.steps.length)} of ${run.steps.length}…`
-                        : run.error
-                          ? 'The withdrawal stopped partway'
-                          : '✓ Sent everything back'}
-                    </span>
-                    <span className="mono">{landedNote(run.steps, run.done)}</span>
-                  </div>
-                )}
-                {run?.chain.key === status.chain && run.error && <ErrorNote>{run.error}</ErrorNote>}
-              </div>
-            );
-          })}
+        <Reveal summary="Chain by chain, and sending it all back">
+          <p>
+            One account, three chains. What is below is the plumbing: which chain each balance
+            happens to sit on, whether that chain can pay for its own transactions, and a way to
+            empty each one back to your wallet. Nothing here has to be managed to trade — the router
+            reads it and decides.
+          </p>
+          {statuses &&
+            statuses.map((status, i) => {
+              const cfg = CHAINS[status.chain];
+              const native = cfg.viem.nativeCurrency.symbol;
+              const state = fundingState(status);
+              return (
+                <div key={status.chain} className={i > 0 ? 'c-secondary' : undefined}>
+                  <Answers>
+                    <Answer
+                      label={`${cfg.name} — gas`}
+                      value={nativeText(status.nativeBalance, native)}
+                      size="sm"
+                      tone={state === 'ready' ? 'good' : state === 'empty' ? 'mut' : 'warn'}
+                      note={fundingNote(status, native)}
+                    />
+                  </Answers>
+
+                  {status.tokens.length > 0 && (
+                    <ul className="c-list">
+                      {status.tokens.map((t) => (
+                        <li key={t.token.address}>
+                          <span className="mut">{t.token.symbol}</span>
+                          <span className="mono">{sig(t.balance, t.token, 6)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+
+                  {(status.tokens.length > 0 || status.nativeBalance > 0n) && (
+                    <button
+                      className="c-ghost"
+                      type="button"
+                      onClick={() => onWithdraw(cfg, status)}
+                      disabled={run?.busy}
+                    >
+                      Send everything on {cfg.name} back to {addr(owner)}
+                    </button>
+                  )}
+
+                  {run?.chain.key === status.chain && run.steps.length > 0 && (
+                    <div className={`c-tx${run.error || run.busy ? '' : ' ok'}`}>
+                      <span>
+                        {run.busy
+                          ? `Sending ${Math.min(run.done + 1, run.steps.length)} of ${run.steps.length}…`
+                          : run.error
+                            ? 'The withdrawal stopped partway'
+                            : '✓ Sent everything back'}
+                      </span>
+                      <span className="mono">{landedNote(run.steps, run.done)}</span>
+                    </div>
+                  )}
+                  {run?.chain.key === status.chain && run.error && <ErrorNote>{run.error}</ErrorNote>}
+                </div>
+              );
+            })}
+        </Reveal>
 
         {held && held.errors.length > 0 && (
           <p className="c-empty" style={{ marginTop: 10 }}>
             {held.errors.map((e) => e.source).join(', ')} did not answer. A chain that did not
-            answer reads exactly like one holding nothing, so treat those rows as unknown rather
-            than empty.
+            answer reads exactly like one holding nothing, so treat this total as a floor rather
+            than a balance.
           </p>
         )}
       </Card>
@@ -415,8 +505,8 @@ export function TradingAccount() {
         <p className="c-empty">
           An ordinary transfer from your wallet to the address above. Nothing here takes custody of
           it: it lands in an account only your signature can derive. You do not pick a chain — it
-          leaves from wherever your wallet holds dollars, and the router moves them to whichever
-          chain a trade turns out to want.
+          leaves from wherever your wallet holds dollars, and from there the router moves them to
+          whichever chain a trade turns out to want, buying the gas it needs on the way.
         </p>
 
         {source && (
@@ -449,13 +539,20 @@ export function TradingAccount() {
         <button
           className="c-go"
           type="button"
-          onClick={() =>
-            source && fromOwner(fundToken(source.chain, source.token, derived, amountIn), source.chain.id)
-          }
+          onClick={() => void onDeposit()}
           disabled={!source || funding || amountIn <= 0n || short}
         >
           {fundLabel()}
         </button>
+
+        {gasWith > 0n && source && (
+          <p className="c-empty" style={{ marginTop: 10 }}>
+            Two prompts, not one: the dollars, then{' '}
+            {nativeText(gasWith, source.chain.viem.nativeCurrency.symbol)} so the account can pay for
+            its first transaction. It only happens once — after that the router buys its own gas on
+            every chain out of the dollars you deposited.
+          </p>
+        )}
 
         {fundError && <ErrorNote>{fundError}</ErrorNote>}
         {fundHash && source && (

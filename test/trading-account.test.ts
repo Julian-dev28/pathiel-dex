@@ -12,7 +12,11 @@ import { CHAINS, bySymbol } from '@/lib/chain';
 import { GAS_FLOOR, statusFor } from '@/lib/account/funding';
 import {
   accountStatuses,
+  chainToUnfreeze,
   depositSource,
+  isFrozen,
+  unifiedDollars,
+  unifiedPositions,
   fundingNote,
   fundingState,
   landedNote,
@@ -210,5 +214,66 @@ describe('where a deposit leaves from', () => {
   it('does not count a holding that is not the chain\'s own dollar', () => {
     expect(depositSource([holding('base', 'WETH', '1000000000000000000')], ['base'])?.balance).toBe(0n);
     expect(depositSource([holding('xlayer', 'USDC', '250000000')], ['xlayer'])?.balance).toBe(0n);
+  });
+});
+
+describe('the account as one balance', () => {
+  const holding = (chain: 'base' | 'xlayer' | 'robinhood', symbol: string, raw: string, amount: string) => ({
+    chain,
+    token: bySymbol(symbol, chain),
+    raw,
+    amount,
+  });
+
+  it('adds the dollars across chains into one figure', () => {
+    // $60 on Base and $40 on X Layer is $100, which is the whole point.
+    const dollars = unifiedDollars([
+      holding('base', 'USDC', '60000000', '60'),
+      holding('xlayer', 'USDG', '40000000', '40'),
+    ]);
+    expect(dollars).toBe(100_000_000n);
+  });
+
+  it('does not count a position as dollars', () => {
+    expect(
+      unifiedDollars([holding('base', 'WETH', '1000000000000000000', '1')]),
+    ).toBe(0n);
+  });
+
+  it('adds one asset up across the chains it is held on', () => {
+    const positions = unifiedPositions([
+      {
+        asset: 'NVDA',
+        holdings: [holding('base', 'NVDAc', '2000000000000000000', '2'), holding('robinhood', 'NVDA', '3000000000000000000', '3')],
+      },
+      { asset: 'USD', holdings: [holding('base', 'USDC', '5000000', '5')] },
+    ]);
+    expect(positions).toEqual([{ asset: 'NVDA', total: 5, chains: ['base', 'robinhood'] }]);
+  });
+
+  it('calls an account frozen when it holds tokens and can sign nowhere', () => {
+    const stuck = [
+      statusFor('base', 0n, [{ token: usdc, balance: 100_000_000n }]),
+      statusFor('xlayer', 0n, []),
+      statusFor('robinhood', 0n, []),
+    ];
+    expect(isFrozen(stuck)).toBe(true);
+    // Unfreeze the chain the money is on: gas anywhere else changes nothing.
+    expect(chainToUnfreeze(stuck)).toBe('base');
+  });
+
+  it('is not frozen once one chain can pay its own way', () => {
+    expect(
+      isFrozen([
+        statusFor('base', GAS_FLOOR.base, [{ token: usdc, balance: 100_000_000n }]),
+        statusFor('xlayer', 0n, []),
+      ]),
+    ).toBe(false);
+  });
+
+  // An empty account is not frozen, it is empty — and telling someone to send
+  // gas to an account with nothing in it is noise.
+  it('is not frozen when it holds nothing at all', () => {
+    expect(isFrozen([statusFor('base', 0n, []), statusFor('xlayer', 0n, [])])).toBe(false);
   });
 });
