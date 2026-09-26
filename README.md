@@ -1,16 +1,25 @@
 # PATHIEL DEX
 
-An on-chain route solver for Robinhood Chain, Base and X Layer. It quotes every
-major venue directly from pool state — direct pools and two-hop routes alike —
-solves the optimal split across them, and executes through the venues' own
-audited routers. Robinhood Chain is the default; pick the chain in the
-interface's top bar, or pass `chain=robinhood|base|xlayer` to the API and MCP
-tools.
+An on-chain route solver for Robinhood Chain, Base and X Layer, with one account
+across all three and Hyperliquid's stock perps. It quotes every major venue
+directly from pool state — direct pools and two-hop routes alike — solves the
+optimal split across them, and executes through the venues' own audited routers.
+
+**Nothing asks which chain.** You name an asset and an amount of dollars; the
+router prices every chain that lists it, spends dollars from wherever the account
+holds them, crosses when crossing pays, and buys the gas it needs on the way. The
+chain a trade landed on is shown afterwards, never demanded beforehand. The pages
+that exist to compare chains — venues, depth, tools, backtests — carry their own
+chain control, and the API and MCP tools still take
+`chain=robinhood|base|xlayer`.
 
 There is no aggregator API anywhere in it, and no API key of any kind. Prices
 come from pool reserves and quoter contracts read over public RPC, which is what
 makes the central claim checkable: **the router's off-chain quote is compared
 against a real fill on a mainnet fork, and has to match.**
+
+Live at **https://pathiel-dex.vercel.app**, invite-only while in beta — see
+[Beta access](#beta-access).
 
 ```
 npm install && npm run dev        # http://localhost:3000
@@ -91,9 +100,9 @@ can reach it — that is the missing piece, not a permanent gap.
 
 ## One account, three chains
 
-Sign in with your wallet, sign one message, fund the account it derives, and
-trade Base, Robinhood Chain, X Layer and Hyperliquid perps from a single
-balance — no chain selector and no wallet popup per trade.
+Sign in with your wallet, sign one message, deposit once, and trade Base,
+Robinhood Chain, X Layer and Hyperliquid perps from a single balance — no chain
+selector and no wallet popup per trade.
 
 **Nothing is deployed and nothing is held.** The account is an ordinary
 keypair derived from that signature, so it exists at the same address on every
@@ -119,10 +128,45 @@ signature, anyone who obtains that signature controls it permanently and it
 cannot be rotated — only replaced by versioning the label — and the key lives
 in the page, so this is a trading float rather than a vault.
 
-**Gas is part of funding.** An account holding USDC and no native token cannot
-move, and each chain prices gas in its own currency. The floors are derived
-from each chain's fee floor rather than guessed, and the interface states the
-shortfall instead of offering a button that fails.
+**The deposit does not ask a chain either.** It reads what your wallet holds on
+each configured chain and leaves from wherever it holds the most dollars — the only
+answer that does not require knowing which of three dollars you own. There is no
+"switch network" step: the transaction carries its chain id, so the wallet raises
+the network itself as part of signing rather than this page becoming somewhere you
+first pick a chain and then act.
+
+**The dollars pool.** $60 on Base and $40 on X Layer is $100, and a $100 trade
+draws on both: `planSpend` in `src/lib/account/plan.ts` takes from every chain
+that can sign, largest first, to keep the number of crossings down. A router that
+picks one source chain refuses that trade while showing the customer $100, which
+is what this one used to do. Balances are compared in millionths of a dollar
+rather than raw base units, so a future 18-decimal dollar cannot read as a
+trillion times itself.
+
+**The router buys its own gas.** A chain cannot be spent from without its native
+currency — not the swap, not even the bridge out — so an account funded with
+dollars alone is unsignable everywhere, and the first trade was impossible. Where
+the destination has no gas, the plan reserves dollars and buys some through the
+bridge before anything else is sent, and those reserved dollars cannot also be
+spent on the trade.
+
+The amount is quoted, never guessed. Sizing gas off each chain's configured fee
+floor (which carries a 10× spike allowance for good reasons of its own) asked
+**$8.10 of ETH to make a $100 trade** on Robinhood Chain; sized against the live
+gas price it is about $0.71, and X Layer about $0.25. Exact-output is the precise
+question — *land this many wei, tell me the cost* — and OKB cannot be quoted that
+way, so the fallback learns the rate from one probe and sizes a second quote from
+it.
+
+Only one gas question is left in front of the customer: an account that can sign
+**nowhere** cannot buy its own way out, so the first deposit to a chain carries a
+little native currency with it, and the account page offers a top-up if that state
+is ever reached. Everything after that the router handles.
+
+**Ranked on what arrives.** Routes are ordered by units received per dollar that
+leaves the account, counting the crossings and any gas bought — so a chain needing
+several dollars of gas does not win by two basis points. The panel says that gas
+stays in the account for later trades rather than being consumed by this one.
 
 ## Perps on the same names
 
@@ -142,23 +186,73 @@ perp mark, the basis between them, and annualised funding. `/perps` shows the
 same thing in the app. Spot comes from this router's own quote path, and every
 read is public and unauthenticated.
 
-**Trading them is local only.** `build_perp_order` signs an order and shows it;
-`perp_order` sends it. Both live behind the same key boundary as `swap` — the
-hosted MCP server has no key and therefore neither tool. Orders are signed with
-an **agent (API) wallet**, which can trade but cannot withdraw: `withdraw3`,
-`usdSend` and `spotSend` need the master key and are not implemented here at
-all. The one transfer an agent may sign, `agentSendAsset`, takes no destination
-argument — it can only move collateral within the account it belongs to.
+**Trading them works in the browser, end to end.** `/perps` prices a market or
+limit order, shows the summary, signs it with the trading account and sends it
+straight to Hyperliquid — the venue answers `/exchange` with
+`access-control-allow-origin: *`, so no server of this project's is in the path
+and cannot delay, reorder or log an order. The same actions exist from
+Claude: `build_perp_order` signs and shows, `perp_order` sends, both behind the
+same key boundary as `swap`, so the hosted MCP server has neither.
+
+The path is deliberately complete rather than just openable:
+
+- **Margin is funded from the same balance.** A perp settles in USDC inside that
+  dex's own margin account; dollars on Base cannot back it. `src/lib/account/margin.ts`
+  quotes the crossing from whichever chain the account holds the most signable
+  dollars on and sends it there. The cost is stated because it is nearly flat —
+  $1.22 on $25 is 489bp, $1.24 on $150 is 82bp — so the panel says one transfer
+  costs far less than three rather than quoting a percentage that flatters size.
+- **Resting orders can be cancelled.** A limit order is `Gtc`: it sits until it
+  fills or somebody cancels it, and for a while this app could place one and offer
+  no way back, leaving the customer's only recourse in Hyperliquid's own interface
+  for an order this app had signed. `/perps` now lists resting orders across both
+  dexes with a cancel per row. They are read one dex at a time so the asset id a
+  cancel must carry comes from the question rather than from parsing the coin
+  field, and an order that cannot be resolved is dropped rather than shown with a
+  button that would cancel the wrong market. `side` arrives as `A`/`B` — ask and
+  bid — which read as a word would label every order backwards.
+- **Margin comes back out.** The destination is the signing account and is not a
+  parameter, so `withdraw3` — the one action that can pay a stranger — can only pay
+  the owner back. `usdSend` and `spotSend` exist only to pay someone else and are
+  still absent. Hyperliquid's flat $1 fee is stated, what will arrive is shown, and
+  anything under $2 is refused rather than quietly eaten.
+- **Orders the venue would refuse are refused first.** Hyperliquid's minimum is $10
+  of notional, measured on the *rounded* size at the price the order will rest at:
+  $10.40 of a two-decimal market works out at $9.11 and would have been thrown out
+  after the customer had already signed for it.
+
+`perp-order.ts` — the module the MCP server uses — still implements no withdrawal
+at all, and should not. It is meant to be given an **agent (API) wallet**, which
+Hyperliquid will not honour for a withdrawal anyway, and it runs next to a
+tool-calling model where code that cannot withdraw cannot be talked into
+withdrawing. The browser is a different case: it holds the master key by design,
+so the exit exists there with its destination nailed down.
 
 The signing is pinned to external vectors from Hyperliquid's own Python SDK
 rather than to this code's output, because a wrong byte in the msgpack action
 hash fails silently with no diagnostic. Asset ids matter as much: a HIP-3
 market is `100000 + dexIndex * 10000 + index`, so `xyz:NVDA` is 110002 and the
-same index in the core universe is a different instrument.
+same index in the core universe is a different instrument. The browser path signs
+the same bytes as the key path, and the tests sign one order — and one cancel —
+both ways and compare, because a payload that drifts does not fail loudly: it
+produces a well-formed order the exchange silently rejects in front of someone
+trying to trade.
+
+**Verified against the live venue without funding anything.** Every action is
+signed with a key generated on the spot and actually posted to `/exchange`. The
+account has no deposit, so success is impossible and the error text is the result:
+`User or API Wallet … does not exist` for an order or a cancel, and `Must deposit
+before performing actions` for a withdrawal, both of which mean the signature
+recovered, the action hash matched, and the asset ids and field order were
+accepted. Anything about the signature or the payload would be a real bug. All
+four pass today, with `xyz:NVDA` sent as 110002 and core BTC as 0.
+
+What is still unproven is the money: **no funded trade has run**, on either side
+of the product. Every step around it is verified.
 
 **A perp is not a swap.** A bad route costs basis points; a liquidation costs
-the position. Collateral is USDC in that dex's own margin account, and a bridge
-can deliver it straight there.
+the position. The ticket reads the margin account before it offers a button, and
+refuses to be a form that submits orders into an account with nothing behind them.
 
 An asset is one thing listed in several places, so `NVDA` on Robinhood Chain,
 `NVDAc` on Base, `wNVDAx` on X Layer and `xyz:NVDA` are one row. The canonical
@@ -301,8 +395,8 @@ router.
 
 `npm run backtest` reads the Swap logs, takes each trade, re-quotes it **as it
 stood one block earlier**, and compares. `npm run backtest -- robinhood` does
-the same on Robinhood Chain, V4 pools included; the page shows the chain picked
-in the masthead.
+the same on Robinhood Chain, V4 pools included; `/backtest` shows whichever chain
+its own tabs select, since which chain is the question that page exists to ask.
 
 Current Base dataset — 2 runs, 6,263 swaps observed, 47 replayed:
 
@@ -351,11 +445,16 @@ instrument. The rules now:
 - **The answer is the largest thing on screen.** Every card leads with its
   figure; every explanation is a closed `<details>` one tap away. Nothing was
   deleted — the rigour is the point — it is just no longer in the way.
-- **Nothing sits between the number and the button.** The trade page is a
-  numbered sequence: the swap itself — pay and receive as two slots in one
-  card, each with its own token picker and a flip between them — then the one
-  risk worth acting on, then a single full-width action. Everything else lives below a visible break
-  and can be hidden entirely with one toggle that persists.
+- **Nothing sits between the number and the button.** The front page is an asset,
+  an amount of dollars, and one action. What the router decided — the chain, the
+  venue, the crossings, the gas it had to buy, the margin over the next-best chain
+  — appears after pricing, above the button that spends the money, because deciding
+  on someone's behalf is only honest if they can see what was decided. Every chain
+  it considered and what each would have returned is one disclosure below that.
+- **A chain is never a question on a trading screen.** The pair-by-pair terminal
+  moved off the front page to `/tools`, where picking a pair and a chain is the
+  stated job. A terminal is a thing you point at a chain, and leaving it under the
+  buy panel meant the first screen still had one on it.
 - **Nothing moves unless movement is the information.** The live block counter
   is gone from the masthead; the price tape only emits when the price actually
   changed; `prefers-reduced-motion` removes the rest.
@@ -574,7 +673,7 @@ pools it already quoted. The extra-hop cost is 70,000 gas, measured in
 
 | Suite | What it covers | Network |
 | --- | --- | --- |
-| `npm run test:unit` | 109 tests: constant-product maths, hop chaining, ladders, interpolation bounds, the splitter, gas-adjusted route choice, slippage floors, path encoding, amount parsing, capacity across decimal mismatches, exposure and slippage recommendation, and the backtest statistics | none |
+| `npm run test:unit` | 464 tests: constant-product maths, hop chaining, ladders, interpolation bounds, the splitter, gas-adjusted route choice, slippage floors, path encoding, amount parsing, capacity across decimal mismatches, exposure and slippage recommendation, the backtest statistics, the signature-to-key derivation, one balance across three chains and the gas it reserves, the deposit chain, withdrawal ordering, perp sizing and margin arithmetic, order and cancel payloads signed both ways, resting-order parsing, and the withdrawal amount string | none |
 | `contracts` — `Prediction.t.sol` | Off-chain prediction vs. realised fill, 11 cases, mainnet fork | fork |
 | `contracts` — `SplitRouter.t.sol` | Atomic split execution, approval hygiene, the call-proxy exploit | fork |
 | `contracts` — `GasProfile.t.sol` | The gas constants the router makes decisions with | fork |
@@ -596,6 +695,36 @@ agrees with the chain; the unit tests prove the arithmetic behaves at the edges
 the chain rarely visits — empty pools, one-wei trades, ladders that collapse,
 curves that are flat. Those are where a router either returns nonsense or
 divides by zero.
+
+## Beta access
+
+The deployment is invite-only, enforced in middleware rather than announced in a
+banner: a gate rendered by the app it is gating has already served the app.
+
+Codes are held as **hashes** in `INVITE_CODE_HASHES`, compared in constant time,
+and checked against the current list on **every request** — so removing a hash
+revokes access for people already holding the cookie, not just for new entrants.
+An unset or empty `INVITE_CODE_HASHES` opens the gate to everyone, which is right
+for local development and would silently un-gate production.
+
+What stays reachable without an invitation: the invite screen, the endpoint that
+redeems a code, and the three legal documents. Someone deciding whether to accept
+the terms should not have to be inside the product to read them, and a risk
+disclosure behind a gate is a risk disclosure nobody read.
+
+The API is gated too. The pages are the product, but the endpoints are where the
+RPC budget goes, and an ungated API is an open door with a closed sign on it.
+
+`/terms`, `/risk` and `/privacy` are versioned (`LEGAL_VERSION`), and acceptance is
+recorded against the version — raising it asks again rather than leaving somebody
+bound to a document they never saw. Nobody can sign in without accepting, because
+the signature they are about to give permanently controls an account holding their
+money.
+
+Working codes live in `BETA_CODES.local.md`, which is gitignored: only their hashes
+are ever deployed, so plaintext cannot be recovered from the repo, from
+`vercel env`, or from a deployment. Losing that file means issuing new codes rather
+than finding the old ones.
 
 ## Execution and custody
 
@@ -653,6 +782,7 @@ claude mcp add --transport http pathiel-dex https://pathiel-dex.vercel.app/api/m
 | `list_tokens` | Every token it can route, with address and decimals |
 | `get_quote` | Best single venue, split comparison, price impact, block |
 | `build_swap` | Unsigned approve + swap transactions for a given wallet |
+| `get_perps` | Stock perp markets beside what the same asset costs to buy outright |
 
 `build_swap` signs nothing and sends nothing. It returns calldata for the
 caller's wallet, with the same rules as the interface: exact approvals, an
@@ -666,16 +796,26 @@ endpoint's cache and rate limit.
 The hosted server will never accept a private key. To let Claude execute
 trades, run the same tools locally over stdio: `scripts/mcp.ts` reads
 `PATHIEL_PRIVATE_KEY` from `.env.local` (gitignored) or the environment, and adds
-two tools.
+four tools — everything below `if (!account) return`.
 
 | Tool | Does |
 |---|---|
 | `get_wallet` | The trading address, its ETH for gas, and its token balances |
 | `swap` | Quotes, approves the exact amount if needed, swaps, waits for confirmation, reports what arrived |
+| `build_perp_order` | Signs a perp order and shows it; sends nothing |
+| `perp_order` | Sends exactly the order `build_perp_order` signed — nothing is re-priced |
 
 `swap` applies the same guards as `build_swap`, and dry-runs the swap before
-sending it so a trade that would revert costs nothing. Use a dedicated wallet
-holding only what you intend to trade — whatever can call the tool can spend it.
+sending it so a trade that would revert costs nothing. `perp_order` takes only the
+id from `build_perp_order` and sends that exact signed order, so what was shown is
+what reaches the exchange.
+
+One key serves both: `PATHIEL_PRIVATE_KEY` becomes the swap account and is handed
+to the Hyperliquid signer as raw bytes, since that side signs with the key rather
+than through an account object. **Make it a Hyperliquid agent (API) wallet**, which
+can trade but not withdraw — nothing in the code can enforce that, so it is a
+choice you make when you set the variable. Either way use a dedicated wallet
+holding only what you intend to trade: whatever can call the tool can spend it.
 
 ```
 # .env.local
@@ -729,8 +869,9 @@ for that is a paid endpoint via `RPC_URL`, not more code.
   but that is not a guarantee and none is offered.
 - **Fee-on-transfer tokens are unsupported.** The quote assumes the amount sent
   is the amount the pool receives.
-- **Public RPC rate-limits.** Set `RPC_URL_ROBINHOOD` / `RPC_URL_BASE` for
-  anything beyond casual use. Robinhood Chain has one public endpoint.
+- **Public RPC rate-limits.** Set `RPC_URL_ROBINHOOD` / `RPC_URL_BASE` /
+  `RPC_URL_XLAYER` for anything beyond casual use. Robinhood Chain has one public
+  endpoint.
 - **Fifteen tokens on Robinhood Chain** (WETH, USDG, cbBTC and twelve Robinhood
   stock and ETF tokens), taken from the Uniswap default list and limited to
   those with a reachable pool.
@@ -752,37 +893,52 @@ for that is a paid endpoint via `RPC_URL`, not more code.
   across scheduled runs rather than arriving in one pass.
 - **Metrics are per-instance.** In-process counters, so on serverless they
   answer "is this instance healthy", not "how much traffic does the product get".
-- **No Uniswap V4.** Quotable today and measured by `npm run probe:venues`, but
-  it settles through `UniversalRouter` with Permit2 rather than a router call,
-  and this app does not quote what it cannot execute.
-- **Hooked V4 pools are unenumerable by design.** Even with V4 execution, a pool
-  behind an arbitrary hook address cannot be discovered by guessing keys.
+- **Hooked V4 pools are unenumerable by design.** A pool behind an arbitrary hook
+  address cannot be discovered by guessing keys, so V4 coverage is whatever the
+  scans can enumerate rather than everything that exists.
+- **No funded trade has executed end to end.** Spot routing, cross-chain planning,
+  gas purchases and every Hyperliquid action are verified live — the last against
+  the venue itself — but nothing has yet moved a real position, on either side.
+- **Only the `xyz` perp dex.** Several other HIP-3 dexes list the same tickers —
+  `km` and `mkts` (Kinetiq), `cash` (dreamcash), `para` (Paragon), `io`
+  (EntropyIO) — and none of them is quoted here, so the mark shown may not be the
+  best one available.
 
 ## Layout
 
 ```
-src/lib/quote.ts        discovery, multi-hop candidates, ladder quoting, the splitter
-src/lib/chain.ts        every chain's addresses, tokens and venues, as data
-src/lib/v4-pools.ts     Robinhood Chain's hookless V4 pools (generated by scripts/scan-v4.ts)
-src/lib/execute.ts      calldata for each venue's router, single and multi-hop
-src/lib/gas.ts          gas priced in the output token, no oracle
-src/lib/serve.ts        cache with coalescing, rate limit
-src/lib/solve.ts        one quote end to end, shared by /api/quote and /api/mcp
-src/lib/mcp.ts          MCP tools; signing tools only when given a local account
-src/lib/exposure.ts     sandwich exposure, drift measured from Swap logs
-src/lib/arb.ts          round-trip search, capacity, fragmentation
-src/lib/backtest.ts     log decoding, trade replay, summary statistics
-src/lib/dataset.ts      reads the committed backtest dataset
-src/lib/log.ts          structured logging and in-process metrics
-src/lib/cycle.ts        Bellman-Ford negative-cycle search over the rate graph
-src/components/ui.tsx   the interface vocabulary: cards, answers, disclosure
-src/app/focus.css       the attention layer
-src/app/api/            quote, analyze, cycles, venues, stream (SSE), health, metrics, openapi, mcp
-data/backtest.jsonl     append-only dataset, written by the scheduled worker
-contracts/src           SplitRouter.sol — written, tested, not deployed
-contracts/test          prediction-vs-fill, split router, gas profile
-test/solver.test.ts     the maths, no network
-scripts/                fixture generation, benchmarks, address and token verification
+src/lib/quote.ts             discovery, multi-hop candidates, ladder quoting, the splitter
+src/lib/chain.ts             every chain's addresses, tokens and venues, as data
+src/lib/v4-pools.ts          Robinhood Chain's hookless V4 pools (generated by scripts/scan-v4.ts)
+src/lib/execute.ts           calldata for each venue's router, single and multi-hop
+src/lib/gas.ts               gas priced in the output token, no oracle
+src/lib/serve.ts             cache with coalescing, rate limit
+src/lib/solve.ts             one quote end to end, shared by /api/quote and /api/mcp
+src/lib/mcp.ts               MCP tools; signing tools only when given a local account
+src/lib/exposure.ts          sandwich exposure, drift measured from Swap logs
+src/lib/arb.ts               round-trip search, capacity, fragmentation
+src/lib/backtest.ts          log decoding, trade replay, summary statistics
+src/lib/dataset.ts           reads the committed backtest dataset
+src/lib/log.ts               structured logging and in-process metrics
+src/lib/cycle.ts             Bellman-Ford negative-cycle search over the rate graph
+src/lib/account/derive.ts    the signature-to-key derivation, canonicalised
+src/lib/account/plan.ts      one balance across three chains; which dollars move, and the gas
+src/lib/account/autoroute.ts prices every chain, buys gas, executes the plan
+src/lib/account/margin.ts    dollars into a perp margin account
+src/lib/account/trade.ts     signing and sending from the trading account, serialised per chain
+src/lib/perp-browser.ts      orders and cancels as payloads for a wallet to sign
+src/lib/perp-orders.ts       resting orders, and the asset id a cancel needs
+src/lib/perp-withdraw.ts     margin back out, destination fixed to the owner
+src/lib/invite.ts            the gate's configuration (Edge-safe: no node:crypto)
+src/middleware.ts            the gate itself, applied before a page is served
+src/components/ui.tsx        the interface vocabulary: cards, answers, disclosure
+src/app/focus.css            the attention layer
+src/app/api/                 quote, analyze, cycles, venues, perps, balances, stream (SSE), health, metrics, openapi, mcp
+data/backtest.jsonl          append-only dataset, written by the scheduled worker
+contracts/src                SplitRouter.sol — written, tested, not deployed
+contracts/test               prediction-vs-fill, split router, gas profile
+test/solver.test.ts          the maths, no network
+scripts/                     fixture generation, benchmarks, address and token verification
 ```
 
 Stack: Next.js, viem, wagmi with injected wallets only — no WalletConnect, which

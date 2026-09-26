@@ -20,9 +20,19 @@
  * `FOR UPDATE` blocking a concurrent backend, which needs a real server.
  */
 
+/**
+ * Every test here boots its own wasm Postgres and runs `schema.sql` against it,
+ * which costs a second and a half before any assertion. Under the default
+ * five-second timeout that is close enough to the edge that a different test
+ * failed on each run — and a suite that fails randomly teaches everyone reading
+ * it to ignore red. The engine is the point of this file, so the time is the
+ * price rather than the bug.
+ */
+vi.setConfig({ testTimeout: 30_000 });
+
 import { PGlite } from '@electric-sql/pglite';
 import { readFileSync } from 'node:fs';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   DuplicateReference,
   MemoryLedger,
