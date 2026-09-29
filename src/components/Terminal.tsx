@@ -4,24 +4,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   useAccount,
   usePublicClient,
-  useReadContract,
   useSendTransaction,
+  useSwitchChain,
   useWaitForTransactionReceipt,
   useChainId,
 } from 'wagmi';
 import { useQuery } from '@tanstack/react-query';
-import { bySymbol, CHAIN_LIST } from '@/lib/chain';
+import { formatUnits } from 'viem';
+import { CHAINS, CHAIN_LIST, type ChainKey, type Token } from '@/lib/chain';
+import { canonical } from '@/lib/assets';
+import { client } from '@/lib/quote';
 import { fetchQuote, type QuoteResponse, type ApiVenue } from '@/lib/api';
 import { toBase, fromBase, sig, bps, addr } from '@/lib/format';
-import {
-  buildSwap,
-  approvalTx,
-  approvalLabel,
-  pendingApprovals,
-  minOut,
-  ERC20,
-} from '@/lib/execute';
-import { useChain, usePair } from './ChainProvider';
+import { buildSwap, approvalTx, approvalLabel, pendingApprovals, minOut, ERC20 } from '@/lib/execute';
 import { TokenSelect } from './TokenSelect';
 import { RoutePath } from './RoutePath';
 import { useTradingAccount } from './AccountProvider';
@@ -55,6 +50,50 @@ function impactBps(v: ApiVenue | undefined): number | null {
   return ((pxFull - pxSmall) / pxSmall) * 10_000;
 }
 
+/**
+ * An asset as the ticket offers it: one entry however many chains list it.
+ *
+ * Each chain's own dollar folds into `USD`, because "sell ETH for dollars" is
+ * the question and which issuer's dollar a chain happens to use is the
+ * router's business. Other tokens fold by `canonical`, so NVDA, NVDAc and
+ * wNVDAx are one choice.
+ */
+type SwapAsset = { key: string; display: Token; byChain: Partial<Record<ChainKey, Token>> };
+
+function swapAssets(): SwapAsset[] {
+  const byKey = new Map<string, SwapAsset>();
+  for (const chain of CHAIN_LIST) {
+    for (const token of chain.tokens) {
+      const key = token.address === chain.usd.address ? 'USD' : canonical(token.symbol);
+      const entry = byKey.get(key) ?? {
+        key,
+        display: { ...token, symbol: key, name: key === 'USD' ? 'US dollar' : token.name },
+        byChain: {},
+      };
+      // First listing on a chain wins: the chain tables list the main token
+      // for an asset (WETH before xETH) ahead of its alternatives.
+      entry.byChain[chain.key] ??= token;
+      byKey.set(key, entry);
+    }
+  }
+  return [...byKey.values()];
+}
+
+const ASSETS = swapAssets();
+const ASSET = new Map(ASSETS.map((a) => [a.key, a]));
+const DISPLAY_TOKENS = ASSETS.map((a) => a.display);
+
+/** One way to fill the trade: a chain, then a venue on it. */
+type RouteOption = {
+  chain: ChainKey;
+  quote: QuoteResponse;
+  venue: ApiVenue;
+  /** What it pays at full size, in the output token's base units. */
+  out: bigint;
+  /** The same, as a number, so chains with different decimals compare. */
+  outNum: number;
+};
+
 /** What `/api/analyze` returns, as far as the ticket reads it. */
 type Analysis = {
   recommendation: {
@@ -71,15 +110,15 @@ type Analysis = {
 /**
  * The swap ticket.
  *
- * One card: what you pay, what you get, the slippage, then the button. The
- * measurements that used to be a separate tools page — capacity, how spread
- * the market is, a round trip, every route — share this ticket's pair and
- * amount, so they sit in one closed "Details" panel under the button rather
- * than asking for the same inputs twice.
+ * No chain picker. The pair is quoted on every chain that lists both sides and
+ * the route is chosen the way a venue is: by what arrives. A route is a chain
+ * and then a venue on it, and both are shown — and can be overridden — in one
+ * list. Where the signer holds the pay token only on some chains, only those
+ * chains compete, since a route that cannot be paid for is not a route.
  */
 export function Terminal() {
-  const { chain, inSym, outSym, setInSym, setOutSym, flip } = usePair();
-  const { setChain } = useChain();
+  const [inKey, setInKey] = useState('ETH');
+  const [outKey, setOutKey] = useState('USD');
   const [amount, setAmount] = useState('1');
   const [slippageBps, setSlippageBps] = useState(50);
   const [acknowledgedImpact, setAcknowledgedImpact] = useState(false);
@@ -87,17 +126,17 @@ export function Terminal() {
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const advice = analysis?.recommendation ?? null;
 
-  const [rawQuote, setQuote] = useState<QuoteResponse | null>(null);
-  // A quote from the chain the user just switched away from must never reach
-  // the swap button: its routers and tokens are on the other chain.
-  const quote = rawQuote && rawQuote.tokenIn.chainId === chain.id ? rawQuote : null;
+  const [quotes, setQuotes] = useState<Partial<Record<ChainKey, QuoteResponse>>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
 
-  const tokenIn = useMemo(() => bySymbol(inSym, chain), [inSym, chain]);
-  const tokenOut = useMemo(() => bySymbol(outSym, chain), [outSym, chain]);
-  const amountIn = useMemo(() => toBase(amount, tokenIn), [amount, tokenIn]);
+  const assetIn = ASSET.get(inKey)!;
+  const assetOut = ASSET.get(outKey)!;
+  const candidates = useMemo(
+    () => CHAIN_LIST.filter((c) => assetIn.byChain[c.key] && assetOut.byChain[c.key]),
+    [assetIn, assetOut],
+  );
 
   const { address, isConnected } = useAccount();
   // When the trading account is unlocked it is the signer: it holds the funds,
@@ -105,39 +144,39 @@ export function Terminal() {
   // wrong-chain check below does not apply to it.
   const { account } = useTradingAccount();
   const signer = account?.address ?? address;
-  const [accountRun, setAccountRun] = useState<{
-    sending: boolean;
-    sent: SentStep[];
-    error: string | null;
-  }>({ sending: false, sent: [], error: null });
+  const [accountRun, setAccountRun] = useState<{ sending: boolean; sent: SentStep[]; error: string | null }>(
+    { sending: false, sent: [], error: null },
+  );
   const chainId = useChainId();
-  const wrongChain = !account && isConnected && chainId !== chain.id;
+  const { switchChain } = useSwitchChain();
 
   const abortRef = useRef<AbortController | null>(null);
   const runQuote = useCallback(async () => {
     abortRef.current?.abort();
-    if (amountIn <= 0n || inSym === outSym) {
-      setQuote(null);
-      setError(null);
+    if (!(Number(amount) > 0) || inKey === outKey || candidates.length === 0) {
+      setQuotes({});
+      setError(candidates.length === 0 && inKey !== outKey ? 'No chain lists both of these.' : null);
       return;
     }
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     setLoading(true);
-    try {
-      const q = await fetchQuote(chain.key, inSym, outSym, amount, ctrl.signal);
-      if (!ctrl.signal.aborted) {
-        setQuote(q);
-        setError(null);
-      }
-    } catch (e) {
-      if ((e as Error).name === 'AbortError') return;
-      setError(e instanceof Error ? e.message : 'quote failed');
-      setQuote(null);
-    } finally {
-      if (!ctrl.signal.aborted) setLoading(false);
-    }
-  }, [chain.key, inSym, outSym, amount, amountIn]);
+    const settled = await Promise.allSettled(
+      candidates.map((c) =>
+        fetchQuote(c.key, assetIn.byChain[c.key]!.symbol, assetOut.byChain[c.key]!.symbol, amount, ctrl.signal),
+      ),
+    );
+    if (ctrl.signal.aborted) return;
+    const next: Partial<Record<ChainKey, QuoteResponse>> = {};
+    let firstError: string | null = null;
+    settled.forEach((r, i) => {
+      if (r.status === 'fulfilled') next[candidates[i].key] = r.value;
+      else firstError ??= r.reason instanceof Error ? r.reason.message : 'quote failed';
+    });
+    setQuotes(next);
+    setError(Object.keys(next).length === 0 ? firstError : null);
+    setLoading(false);
+  }, [candidates, assetIn, assetOut, inKey, outKey, amount]);
 
   useEffect(() => {
     const t = setTimeout(runQuote, 350);
@@ -154,12 +193,87 @@ export function Terminal() {
     return () => clearInterval(t);
   }, []);
 
-  // The route the user picked, by venue id. Null means "the best one", which
-  // follows the quote as it refreshes; a pick sticks until the pair changes.
-  const [pickedId, setPickedId] = useState<string | null>(null);
+  // What the signer holds of the pay token on each chain. Decides which chains
+  // may compete: the best price on a chain holding none of it is not on offer.
+  const { data: balances, refetch: refetchBalances } = useQuery({
+    queryKey: ['swap-balances', signer, inKey],
+    queryFn: async () => {
+      const entries = await Promise.all(
+        CHAIN_LIST.filter((c) => assetIn.byChain[c.key]).map(async (c) => {
+          const token = assetIn.byChain[c.key]!;
+          const held = (await client(c).readContract({
+            address: token.address,
+            abi: ERC20,
+            functionName: 'balanceOf',
+            args: [signer!],
+          })) as bigint;
+          return [c.key, held] as const;
+        }),
+      );
+      return Object.fromEntries(entries) as Partial<Record<ChainKey, bigint>>;
+    },
+    enabled: !!signer,
+    refetchInterval: 15_000,
+  });
 
-  useEffect(() => setAcknowledgedImpact(false), [inSym, outSym, amount, pickedId]);
-  useEffect(() => setPickedId(null), [chain.key, inSym, outSym]);
+  const options = useMemo(() => {
+    const all: RouteOption[] = [];
+    for (const c of candidates) {
+      const q = quotes[c.key];
+      if (!q) continue;
+      const bestId = q.route.single.allocations[0]?.venue.id;
+      for (const v of q.venues) {
+        const out = v.venue.id === bestId ? q.route.single.amountOut : v.amountOutAtFull;
+        if (out <= 0n) continue;
+        all.push({
+          chain: c.key,
+          quote: q,
+          venue: v,
+          out,
+          outNum: Number(formatUnits(out, q.tokenOut.decimals)),
+        });
+      }
+    }
+    return all.sort((a, b) => b.outNum - a.outNum);
+  }, [candidates, quotes]);
+
+  // Chains where the signer can actually pay. None funded means show the best
+  // anywhere and let the button say what is missing.
+  const funded = useMemo(() => {
+    if (!balances) return null;
+    const ok = candidates
+      .filter((c) => {
+        const held = balances[c.key];
+        const token = assetIn.byChain[c.key];
+        return held !== undefined && !!token && held > 0n && held >= toBase(amount, token);
+      })
+      .map((c) => c.key);
+    return ok.length > 0 ? new Set(ok) : null;
+  }, [balances, candidates, assetIn, amount]);
+
+  const eligible = funded ? options.filter((o) => funded.has(o.chain)) : options;
+  const best = eligible[0] ?? null;
+
+  // The route the user picked. Null means "the best one", which follows the
+  // quotes as they refresh; a pick sticks until the pair changes.
+  const [pickedId, setPickedId] = useState<string | null>(null);
+  const optionId = (o: RouteOption) => `${o.chain}:${o.venue.venue.id}`;
+  const picked = options.find((o) => optionId(o) === pickedId) ?? null;
+  const selected = picked ?? best;
+
+  useEffect(() => setAcknowledgedImpact(false), [inKey, outKey, amount, pickedId]);
+  useEffect(() => setPickedId(null), [inKey, outKey]);
+
+  const execChain = CHAINS[selected?.chain ?? candidates[0]?.key ?? 'robinhood'];
+  const tokenIn = assetIn.byChain[execChain.key] ?? assetIn.display;
+  const tokenOut = assetOut.byChain[execChain.key] ?? assetOut.display;
+  const amountIn = useMemo(() => toBase(amount, tokenIn), [amount, tokenIn]);
+  const quote = selected?.quote ?? null;
+  const route = quote?.route;
+  const execApiVenue = selected?.venue;
+  const execVenue = execApiVenue?.venue ?? null;
+  const expectedOut = selected?.out ?? 0n;
+  const wrongChain = !account && isConnected && chainId !== execChain.id;
 
   // Slippage advice and the details arrive late and never block the form.
   // Nothing here changes the tolerance on the user's behalf — it offers, they
@@ -167,10 +281,10 @@ export function Terminal() {
   useEffect(() => {
     let cancelled = false;
     setAnalysis(null);
-    if (amountIn <= 0n || inSym === outSym) return;
+    if (!(Number(amount) > 0) || inKey === outKey || !quote) return;
     const t = setTimeout(() => {
       fetch(
-        `/api/analyze?chain=${chain.key}&in=${inSym}&out=${outSym}&amount=${encodeURIComponent(amount)}&slippage=50`,
+        `/api/analyze?chain=${execChain.key}&in=${tokenIn.symbol}&out=${tokenOut.symbol}&amount=${encodeURIComponent(amount)}&slippage=50`,
         { cache: 'no-store' },
       )
         .then((r) => r.json())
@@ -185,42 +299,17 @@ export function Terminal() {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [chain.key, inSym, outSym, amount, amountIn]);
+    // Keyed on the route's chain and pair, not the quote object, so a refresh
+    // every twelve seconds does not re-run the analysis.
+  }, [execChain.key, tokenIn.symbol, tokenOut.symbol, amount, inKey, outKey, !!quote]);
 
-  const route = quote?.route;
-  const bestVenue = route?.single.allocations[0]?.venue ?? null;
-
-  // The best route, plus every quoted Uniswap route as an alternative, best
-  // output first. A pick that the latest quote no longer contains falls back
-  // to the best route rather than executing something stale.
-  const routeOptions = useMemo(
-    () =>
-      (quote?.venues ?? [])
-        .filter((v) => v.venue.id === bestVenue?.id || v.venue.label.startsWith('Uniswap'))
-        .sort((a, b) => (a.amountOutAtFull > b.amountOutAtFull ? -1 : 1)),
-    [quote, bestVenue],
-  );
-  const picked = routeOptions.find((v) => v.venue.id === pickedId);
-  const execVenue = picked?.venue ?? bestVenue;
-  const execApiVenue = quote?.venues.find((v) => v.venue.id === execVenue?.id);
-  // What the executed route pays at full size: the best route's own figure,
-  // or the picked route's point on its quoted ladder.
-  const expectedOut = picked ? picked.amountOutAtFull : (route?.single.amountOut ?? 0n);
-  const publicClient = usePublicClient({ chainId: chain.id });
-
-  const { data: balance } = useReadContract({
-    address: tokenIn.address,
-    abi: ERC20,
-    functionName: 'balanceOf',
-    args: signer ? [signer] : undefined,
-    chainId: chain.id,
-    query: { enabled: !!signer, refetchInterval: 15_000 },
-  });
+  const publicClient = usePublicClient({ chainId: execChain.id });
+  const balance = balances?.[execChain.key];
 
   // Most venues need one approval; Uniswap V4 needs two (the token to Permit2,
   // then Permit2 to the router). The button walks them in order, one per click.
   const { data: approvals, refetch: refetchAllowance } = useQuery({
-    queryKey: ['approvals', chain.id, signer, execVenue?.id, amountIn.toString()],
+    queryKey: ['approvals', execChain.id, signer, execVenue?.id, amountIn.toString()],
     queryFn: () => pendingApprovals(publicClient!, signer!, execVenue!, amountIn),
     // The account path sends its own approvals inside the trade, so they are
     // read here only to know whether the wallet path needs a first click.
@@ -228,7 +317,7 @@ export function Terminal() {
   });
   const nextApproval = approvals?.[0];
   const needsApproval = !!nextApproval;
-  const insufficient = balance !== undefined && amountIn > (balance as bigint);
+  const insufficient = balance !== undefined && amountIn > balance;
 
   const { sendTransaction, data: txHash, isPending, error: txError, reset } = useSendTransaction();
   const { isLoading: mining, isSuccess: mined } = useWaitForTransactionReceipt({ hash: txHash });
@@ -236,9 +325,10 @@ export function Terminal() {
   useEffect(() => {
     if (mined) {
       refetchAllowance();
+      refetchBalances();
       runQuote();
     }
-  }, [mined, refetchAllowance, runQuote]);
+  }, [mined, refetchAllowance, refetchBalances, runQuote]);
 
   const impact = impactBps(execApiVenue);
   const highImpact = impact !== null && impact < HIGH_IMPACT_BPS;
@@ -252,23 +342,24 @@ export function Terminal() {
   const onApprove = () => {
     if (!nextApproval) return;
     reset();
-    sendTransaction({ ...approvalTx(nextApproval, amountIn), chainId: chain.id });
+    sendTransaction({ ...approvalTx(nextApproval, amountIn), chainId: execChain.id });
   };
 
   const onSwap = () => {
     if (!execVenue || !signer || !quote || expired) return;
     reset();
     if (!account) {
-      sendTransaction({ ...buildSwap(execVenue, amountIn, floor, signer), chainId: chain.id });
+      sendTransaction({ ...buildSwap(execVenue, amountIn, floor, signer), chainId: execChain.id });
       return;
     }
     // One click for the whole trade: the account sends its own approvals and
     // waits for each, so there is no second button and no wallet popup.
     setAccountRun({ sending: true, sent: [], error: null });
-    swapFromAccount(account, chain.key, execVenue, amountIn, floor)
+    swapFromAccount(account, execChain.key, execVenue, amountIn, floor)
       .then((sent) => {
         setAccountRun({ sending: false, sent, error: null });
         refetchAllowance();
+        refetchBalances();
         runQuote();
       })
       .catch((e: unknown) => {
@@ -288,7 +379,6 @@ export function Terminal() {
     expired ||
     amountIn <= 0n ||
     (highImpact && !acknowledgedImpact) ||
-    wrongChain ||
     accountRun.sending;
 
   /** One line that is always true about what the button will do next. */
@@ -298,19 +388,35 @@ export function Terminal() {
       if (accountRun.sending) {
         return accountRun.sent.length > 0 ? 'Swapping…' : 'Approving and swapping…';
       }
-      if (insufficient) return `Not enough ${tokenIn.symbol} in your account`;
+      if (insufficient) return `Not enough ${inKey} in your account on ${execChain.name}`;
       if (expired) return 'Refreshing price…';
-      return `Trade ${amount || '0'} ${tokenIn.symbol} from your account`;
+      return `Trade ${amount || '0'} ${inKey} from your account`;
     }
-    if (wrongChain) return `Switch to ${chain.name}`;
-    if (insufficient) return `Not enough ${tokenIn.symbol}`;
+    if (wrongChain) return `Switch wallet to ${execChain.name}`;
+    if (insufficient) return `Not enough ${inKey} on ${execChain.name}`;
     if (needsApproval) return isPending || mining ? 'Approving…' : approvalLabel(nextApproval);
     if (isPending) return 'Confirm in your wallet…';
     if (mining) return 'Swapping…';
     if (expired) return 'Refreshing price…';
     if (highImpact && !acknowledgedImpact) return 'Confirm the price impact above';
-    return `Swap ${tokenIn.symbol} for ${tokenOut.symbol}`;
+    return `Swap ${inKey} for ${outKey}`;
   };
+
+  const onAction = () => {
+    // The route decides the chain; the wallet is asked to follow it here, at
+    // the moment it matters, rather than the page asking up front.
+    if (wrongChain) return switchChain({ chainId: execChain.id });
+    if (needsApproval && !account) return onApprove();
+    onSwap();
+  };
+
+  const flip = () => {
+    setInKey(outKey);
+    setOutKey(inKey);
+  };
+
+  const topOut = options[0]?.outNum ?? 0;
+  const vsBest = (o: RouteOption) => (topOut > 0 ? ((o.outNum - topOut) / topOut) * 10_000 : 0);
 
   return (
     <>
@@ -321,17 +427,7 @@ export function Terminal() {
           quote ? <span className="mono">block {quote.blockNumber.toString()}</span> : undefined
         }
       >
-        <div className="c-slot-label">Chain</div>
-        <Segmented
-          label="Chain"
-          value={chain.key}
-          onChange={setChain}
-          options={CHAIN_LIST.map((c) => ({ value: c.key, label: c.name }))}
-        />
-
-        <div className="c-slot-label" style={{ marginTop: 16 }}>
-          You pay
-        </div>
+        <div className="c-slot-label">You pay</div>
         <div className="c-field">
           <input
             className="c-amount"
@@ -339,21 +435,21 @@ export function Terminal() {
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
             placeholder="0.0"
-            aria-label={`Amount of ${tokenIn.symbol} to sell`}
+            aria-label={`Amount of ${inKey} to sell`}
           />
-          <TokenSelect value={inSym} onChange={setInSym} tokens={chain.tokens} exclude={outSym} />
+          <TokenSelect value={inKey} onChange={setInKey} tokens={DISPLAY_TOKENS} exclude={outKey} />
         </div>
 
         <div className="c-field-foot">
           {isConnected && balance !== undefined ? (
             <>
               <span>
-                Balance {sig(balance as bigint, tokenIn)} {tokenIn.symbol}
+                Balance {sig(balance, tokenIn)} {inKey} on {execChain.name}
               </span>
               <button
                 className="c-ghost"
                 type="button"
-                onClick={() => setAmount(fromBase(balance as bigint, tokenIn))}
+                onClick={() => setAmount(fromBase(balance, tokenIn))}
               >
                 Use max
               </button>
@@ -378,14 +474,14 @@ export function Terminal() {
         <div className="c-field">
           <output
             className={`c-amount${quote ? '' : ' c-t-mut'}`}
-            aria-label={`${tokenOut.symbol} received`}
+            aria-label={`${outKey} received`}
           >
             {quote ? sig(expectedOut, tokenOut) : '0.0'}
           </output>
-          <TokenSelect value={outSym} onChange={setOutSym} tokens={chain.tokens} exclude={inSym} />
+          <TokenSelect value={outKey} onChange={setOutKey} tokens={DISPLAY_TOKENS} exclude={inKey} />
         </div>
 
-        {!quote ? (
+        {!selected ? (
           <div style={{ marginTop: 12 }}>
             {loading ? (
               <Loading rows={2} />
@@ -397,41 +493,46 @@ export function Terminal() {
           </div>
         ) : (
           <>
+            <label className="c-route-pick">
+              <span>Route</span>
+              <select
+                className="c-route-select"
+                value={optionId(selected)}
+                onChange={(e) =>
+                  setPickedId(best && e.target.value === optionId(best) ? null : e.target.value)
+                }
+              >
+                {candidates
+                  .filter((c) => options.some((o) => o.chain === c.key))
+                  .map((c) => (
+                    <optgroup
+                      key={c.key}
+                      label={funded && !funded.has(c.key) ? `${c.name} — not enough ${inKey} here` : c.name}
+                    >
+                      {options
+                        .filter((o) => o.chain === c.key)
+                        .map((o) => (
+                          <option key={optionId(o)} value={optionId(o)}>
+                            {o.venue.venue.label} — {sig(o.out, o.quote.tokenOut)}{' '}
+                            {o.quote.tokenOut.symbol}
+                            {best && optionId(o) === optionId(best)
+                              ? ' (best)'
+                              : Math.round(vsBest(o)) === 0
+                                ? ''
+                                : ` (${bps(vsBest(o))})`}
+                          </option>
+                        ))}
+                    </optgroup>
+                  ))}
+              </select>
+            </label>
+
             {execVenue && (
               <div className="c-field-foot">
                 <span>
-                  via {execVenue.label} · <RoutePath venue={execVenue} />
+                  {execChain.name} → {execVenue.label} · <RoutePath venue={execVenue} />
                 </span>
               </div>
-            )}
-
-            {routeOptions.length > 1 && (
-              <label className="c-route-pick">
-                <span>Route</span>
-                <select
-                  className="c-route-select"
-                  value={execVenue?.id ?? ''}
-                  onChange={(e) =>
-                    setPickedId(e.target.value === bestVenue?.id ? null : e.target.value)
-                  }
-                >
-                  {routeOptions.map((v) => {
-                    const best = route!.single.amountOut;
-                    const delta =
-                      best > 0n ? Number(((v.amountOutAtFull - best) * 10_000n) / best) : 0;
-                    return (
-                      <option key={v.venue.id} value={v.venue.id}>
-                        {v.venue.label} — {sig(v.amountOutAtFull, tokenOut)} {tokenOut.symbol}
-                        {v.venue.id === bestVenue?.id
-                          ? ' (best)'
-                          : delta === 0
-                            ? ''
-                            : ` (${bps(delta)})`}
-                      </option>
-                    );
-                  })}
-                </select>
-              </label>
             )}
 
             <div className="c-guarantee">
@@ -503,13 +604,14 @@ export function Terminal() {
         {/* ── the action ──────────────────────────────────────────────── */}
         <button
           className="c-go"
-          onClick={needsApproval && !account ? onApprove : onSwap}
+          onClick={onAction}
           disabled={
             !isConnected ||
-            insufficient ||
-            (needsApproval && !account
-              ? isPending || mining
-              : blocked || isPending || mining || accountRun.sending)
+            (!wrongChain &&
+              (insufficient ||
+                (needsApproval && !account
+                  ? isPending || mining
+                  : blocked || isPending || mining || accountRun.sending)))
           }
           type="button"
         >
@@ -530,8 +632,8 @@ export function Terminal() {
         {txHash && (
           <div className={`c-tx${mined ? ' ok' : ''}`}>
             <span>{mined ? '✓ Confirmed' : 'Pending…'}</span>
-            <a href={`${chain.explorer}/tx/${txHash}`} target="_blank" rel="noreferrer">
-              {addr(txHash)} on {chain.explorerName}
+            <a href={`${execChain.explorer}/tx/${txHash}`} target="_blank" rel="noreferrer">
+              {addr(txHash)} on {execChain.explorerName}
             </a>
           </div>
         )}
@@ -548,8 +650,8 @@ export function Terminal() {
                       {sig(BigInt(analysis.capacity[0]?.size ?? '0'), tokenIn, 5)}
                     </>
                   }
-                  unit={tokenIn.symbol}
-                  note={analysis.capacity[0]?.venue}
+                  unit={inKey}
+                  note={`${analysis.capacity[0]?.venue ?? ''} on ${execChain.name}`}
                 />
                 <Answer
                   label="Off the best venue"
@@ -607,27 +709,25 @@ export function Terminal() {
                   </tr>
                 </thead>
                 <tbody>
-                  {[...quote.venues]
-                    .sort((a, b) => (a.amountOutAtFull > b.amountOutAtFull ? -1 : 1))
-                    .map((v) => {
-                      const best = quote.route.single.amountOut;
-                      const delta =
-                        best > 0n ? Number(((v.amountOutAtFull - best) * 10_000n) / best) : 0;
-                      return (
-                        <tr key={v.venue.id}>
-                          <td>
-                            {v.venue.label}
-                            <div>
-                              <RoutePath venue={v.venue} />
-                            </div>
-                          </td>
-                          <td className="num mono">{sig(v.amountOutAtFull, tokenOut)}</td>
-                          <td className={`num mono ${delta < 0 ? 'dn' : 'mut'}`}>
-                            {delta === 0 ? 'best' : bps(delta)}
-                          </td>
-                        </tr>
-                      );
-                    })}
+                  {options.map((o) => {
+                    const delta = vsBest(o);
+                    return (
+                      <tr key={optionId(o)}>
+                        <td>
+                          {CHAINS[o.chain].name} → {o.venue.venue.label}
+                          <div>
+                            <RoutePath venue={o.venue.venue} />
+                          </div>
+                        </td>
+                        <td className="num mono">
+                          {sig(o.out, o.quote.tokenOut)} {o.quote.tokenOut.symbol}
+                        </td>
+                        <td className={`num mono ${Math.round(delta) < 0 ? 'dn' : 'mut'}`}>
+                          {Math.round(delta) === 0 ? 'best' : bps(delta)}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -638,8 +738,8 @@ export function Terminal() {
       <AccountPanel />
 
       <p className="c-foot-note">
-        Unaudited. Trades execute through Uniswap&rsquo;s, PancakeSwap&rsquo;s and Aerodrome&rsquo;s
-        own audited routers — this app never holds your funds.
+        Unaudited. Trades execute through Uniswap&rsquo;s, PancakeSwap&rsquo;s and
+        Aerodrome&rsquo;s own audited routers — this app never holds your funds.
       </p>
     </>
   );

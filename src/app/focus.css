@@ -646,3 +646,5 @@
   .d-layout { grid-template-columns: 1fr; gap: 12px; }
   .d-toc { position: static; border-bottom: 1px solid var(--rule); padding-bottom: 10px; }
 }
+
+.c-range { width: 100%; margin: 6px 0 2px; accent-color: var(--accent); }

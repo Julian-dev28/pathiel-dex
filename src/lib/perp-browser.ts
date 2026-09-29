@@ -167,6 +167,26 @@ export async function prepareOrder(intent: PerpOrderIntent): Promise<PreparedOrd
 }
 
 /**
+ * Set the account's leverage on one market, ready to sign.
+ *
+ * Hyperliquid holds leverage per market as account state, not per order, so
+ * it is its own L1 action sent before the order it applies to. Markets that
+ * only allow isolated margin reject a cross setting, hence `isCross`.
+ */
+export function prepareLeverage(
+  assetId: number,
+  leverage: number,
+  isCross: boolean,
+): Pick<PreparedOrder, 'typedData' | 'finalize'> {
+  const action = { type: 'updateLeverage', asset: assetId, isCross, leverage };
+  const nonce = Date.now();
+  return {
+    typedData: l1Payload(action, nonce),
+    finalize: (signature) => ({ action, nonce, signature: splitSignature(signature) }),
+  };
+}
+
+/**
  * Send a signed order to Hyperliquid, straight from the browser.
  *
  * There is deliberately no server route in front of this. Hyperliquid answers

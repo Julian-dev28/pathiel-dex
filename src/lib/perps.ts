@@ -52,6 +52,8 @@ export type PerpMarket = {
   openInterestUsd: number;
   dayVolumeUsd: number;
   maxLeverage: number;
+  /** Isolated margin only: the dex refuses a cross leverage setting here. */
+  onlyIsolated?: boolean;
 };
 
 /**
@@ -60,7 +62,12 @@ export type PerpMarket = {
  * `szDecimals` is needed to price an order: Hyperliquid rejects a price with
  * more than `6 - szDecimals` decimal places, and it differs per market.
  */
-export type UniverseEntry = { name: string; maxLeverage: number; szDecimals: number };
+export type UniverseEntry = {
+  name: string;
+  maxLeverage: number;
+  szDecimals: number;
+  onlyIsolated?: boolean;
+};
 
 /** What the info endpoint returns for a universe and its contexts. */
 type MetaAndCtxs = [
@@ -90,6 +97,7 @@ export function parseMarkets([meta, ctxs]: MetaAndCtxs, dex: string): PerpMarket
       openInterestUsd: Number(ctx.openInterest ?? 0) * markUsd,
       dayVolumeUsd: Number(ctx.dayNtlVlm ?? 0),
       maxLeverage: m.maxLeverage,
+      onlyIsolated: m.onlyIsolated === true,
     });
   });
   return out;

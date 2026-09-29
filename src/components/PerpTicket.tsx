@@ -15,6 +15,7 @@ import { WITHDRAW_FEE_USD, prepareWithdrawal } from '@/lib/perp-withdraw';
 import { addr } from '@/lib/format';
 import {
   explainExchangeError,
+  prepareLeverage,
   prepareOrder,
   submitOrder,
   type PreparedOrder,
@@ -22,7 +23,6 @@ import {
 import { useTradingAccount } from './AccountProvider';
 import { Card, Answer, Answers, Chip, Empty, ErrorNote, Reveal, Segmented, Suggest } from './ui';
 import {
-  accountLeverage,
   blockedReason,
   closeOrder,
   liquidationDropPct,
@@ -70,6 +70,8 @@ export function PerpTicket({ row }: { row: PerpRow | null }) {
   const [limit, setLimit] = useState('');
   const [reduceOnly, setReduceOnly] = useState(false);
   const [acknowledged, setAcknowledged] = useState(false);
+  /** Leverage the next order runs at. Null until the user moves it. */
+  const [lev, setLev] = useState<number | null>(null);
   /** Bumped by every edit, so a pricing call that outlives its form is dropped. */
   const formToken = useRef(0);
 
@@ -133,7 +135,10 @@ export function PerpTicket({ row }: { row: PerpRow | null }) {
     setPrepared(null);
     setAcknowledged(false);
     setError(null);
-  }, [row?.symbol, row?.dex, side, isLimit, amount, limit, reduceOnly]);
+  }, [row?.symbol, row?.dex, side, isLimit, amount, limit, reduceOnly, lev]);
+
+  // A leverage picked for one market says nothing about the next.
+  useEffect(() => setLev(null), [row?.symbol, row?.dex]);
 
   if (!isConnected || !address) {
     return (
@@ -162,22 +167,25 @@ export function PerpTicket({ row }: { row: PerpRow | null }) {
   const freeMarginUsd = account?.withdrawableUsd ?? 0;
   const position = account?.positions.find((p) => p.symbol === row.symbol);
   const positionSize = position?.size ?? 0;
-  // The account's own setting where a position reveals it, the market ceiling
-  // only as a fallback. Nothing here sends updateLeverage, so this is a read.
-  const accountLev = position?.leverage && position.leverage > 0 ? position.leverage : row.maxLeverage;
+  // The leverage the order runs at: the user's pick, else the position's own
+  // setting, else a conservative default under the market's ceiling. Opening
+  // orders send updateLeverage first, so this is what the exchange will use.
+  const positionLev = position?.leverage && position.leverage > 0 ? position.leverage : null;
+  const chosenLev = Math.max(1, Math.min(lev ?? positionLev ?? Math.min(5, row.maxLeverage), row.maxLeverage));
+  const isCross = !row.onlyIsolated;
+  const needsLeverageUpdate = !reduceOnly && chosenLev !== positionLev;
 
   const sizeUsd = usdAmount(amount);
   const limitUsd = usdAmount(limit);
   const priceUsd = isLimit && limitUsd > 0 ? limitUsd : row.markUsd;
   const size = sizeAtPrice(sizeUsd, priceUsd);
-  const leverage = accountLeverage(sizeUsd, marginUsd);
-  const liqDrop = leverage === null ? null : liquidationDropPct(leverage, row.maxLeverage);
+  const liqDrop = liquidationDropPct(chosenLev, row.maxLeverage);
   const severe = liqDrop !== null && liqDrop < 10;
 
   const blocked = blockedReason({
     connected: isConnected,
     freeMarginUsd,
-    leverage: accountLev,
+    leverage: chosenLev,
     usd: sizeUsd,
     isLimit,
     limitUsd,
@@ -234,6 +242,20 @@ export function PerpTicket({ row }: { row: PerpRow | null }) {
       // plain records; whoever signs is asked for exactly what was reviewed.
       // The account signs in the page when it is unlocked, which is the whole
       // point of it — a perp order should not need a popup either.
+      // Leverage is account state on Hyperliquid, so it is set before the
+      // order it applies to. A wallet signs twice here; the account does not
+      // prompt at all.
+      if (needsLeverageUpdate) {
+        const levReq = prepareLeverage(prepared.summary.assetId, chosenLev, isCross);
+        const levSig = signer
+          ? await signer.signTypedData(
+              levReq.typedData as unknown as Parameters<typeof signer.signTypedData>[0],
+            )
+          : await signTypedDataAsync(
+              levReq.typedData as unknown as Parameters<typeof signTypedDataAsync>[0],
+            );
+        await submitOrder(levReq.finalize(levSig));
+      }
       const typedData = prepared.typedData as unknown as Parameters<
         typeof signTypedDataAsync
       >[0];
@@ -491,6 +513,25 @@ export function PerpTicket({ row }: { row: PerpRow | null }) {
         />
 
         <div className="c-slot-label" style={{ marginTop: 14 }}>
+          Leverage · <span className="mono">{chosenLev}×</span>
+          <span className="mut">
+            {' '}
+            · {isCross ? 'cross' : 'isolated'} margin, up to {row.maxLeverage}×
+          </span>
+        </div>
+        <input
+          className="c-range"
+          type="range"
+          min={1}
+          max={row.maxLeverage}
+          step={1}
+          value={chosenLev}
+          onChange={(e) => setLev(Number(e.target.value))}
+          aria-label="Leverage"
+          disabled={reduceOnly}
+        />
+
+        <div className="c-slot-label" style={{ marginTop: 14 }}>
           Size in dollars
         </div>
         <div className="c-field">
@@ -507,8 +548,8 @@ export function PerpTicket({ row }: { row: PerpRow | null }) {
         <div className="c-field-foot">
           <span>
             ≈ {size.toLocaleString('en-US', { maximumFractionDigits: 4 })} {row.symbol} at{' '}
-            {usd(priceUsd)}, holding {usd(marginRequiredUsd(sizeUsd, accountLev))} of margin at{' '}
-            {accountLev}×
+            {usd(priceUsd)}, holding {usd(marginRequiredUsd(sizeUsd, chosenLev))} of margin at{' '}
+            {chosenLev}×
           </span>
         </div>
 
@@ -553,18 +594,17 @@ export function PerpTicket({ row }: { row: PerpRow | null }) {
           />
           <span>
             <strong>A perp position can be liquidated.</strong>{' '}
-            {leverage === null || liqDrop === null ? (
+            {liqDrop === null ? (
               <>
                 The margin backing it is the whole loss, not a few basis points of it. A swap that
                 goes wrong costs the spread; this costs the account.
               </>
             ) : (
               <>
-                {usd(sizeUsd)} against {usd(marginUsd)} of margin is{' '}
-                <strong className="mono">{leverage.toFixed(2)}×</strong>. Roughly a{' '}
+                At <strong className="mono">{chosenLev}×</strong>, roughly a{' '}
                 <strong className="mono">{liqDrop.toFixed(1)}%</strong> move against you closes the
-                position and takes that margin with it — before fees and funding, which move the
-                line closer.
+                position and takes its {usd(marginRequiredUsd(sizeUsd, chosenLev))} of margin with
+                it — before fees and funding, which move the line closer.
               </>
             )}
           </span>
@@ -627,8 +667,11 @@ export function PerpTicket({ row }: { row: PerpRow | null }) {
               <span className="mono">{prepared.summary.orderType}</span>
             </li>
             <li>
-              <span>Maximum leverage</span>
-              <span className="mono">{prepared.summary.maxLeverage}×</span>
+              <span>Leverage</span>
+              <span className="mono">
+                {chosenLev}× {isCross ? 'cross' : 'isolated'} · max {prepared.summary.maxLeverage}×
+                {needsLeverageUpdate ? ' · set before the order' : ''}
+              </span>
             </li>
           </ul>
           <div className="c-guarantee">
