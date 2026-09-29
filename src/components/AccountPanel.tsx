@@ -88,8 +88,7 @@ export function AccountPanel() {
         )}
         <p className="c-empty" style={{ marginTop: 10 }}>
           Illustrative fills. Edge is measured against the best single-venue route; the range here
-          matches what the solver actually produced in{' '}
-          <a href="/backtest">the published backtest</a>.
+          matches what the solver actually produced in the published backtest.
         </p>
       </Card>
     </>

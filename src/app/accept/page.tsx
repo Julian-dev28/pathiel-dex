@@ -1,7 +1,7 @@
 import { Suspense } from 'react';
-import { InviteGate } from '@/components/InviteGate';
+import { TermsGate } from '@/components/TermsGate';
 
-export const metadata = { title: 'Invitation' };
+export const metadata = { title: 'Accept the terms' };
 
 /**
  * The gate reads `?next=` to send someone back where they were headed, and
@@ -12,7 +12,7 @@ export const metadata = { title: 'Invitation' };
 export default function Page() {
   return (
     <Suspense fallback={null}>
-      <InviteGate />
+      <TermsGate />
     </Suspense>
   );
 }

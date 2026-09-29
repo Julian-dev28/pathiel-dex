@@ -302,7 +302,7 @@ export function Terminal() {
   return (
     <>
       <div className="c-tradehead">
-        <h1 className="c-pagetitle">Trade</h1>
+        <h1 className="c-pagetitle">Swap</h1>
         <button className="c-ghost" type="button" onClick={toggleFocus} aria-pressed={focus}>
           {focus ? 'Show details' : 'Hide details'}
         </button>

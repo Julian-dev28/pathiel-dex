@@ -614,3 +614,42 @@
   font: inherit; font-size: 12.5px; color: var(--ink); background: var(--surface);
   border: 1px solid var(--rule-2); border-radius: 5px;
 }
+
+/* ── docs ─────────────────────────────────────────────────────────────── */
+
+/* Documentation layout: anchors on the left, every section open on the right. */
+.d-layout {
+  display: grid; gap: 40px;
+  grid-template-columns: 190px minmax(0, 1fr);
+  align-items: start;
+}
+.d-toc {
+  position: sticky; top: 76px;
+  padding-top: 8px;
+  font-size: 13px;
+}
+.d-toc ul { list-style: none; margin: 0; padding: 0; }
+.d-toc li { margin: 0; }
+.d-toc ul ul { padding-left: 12px; border-left: 1px solid var(--rule); margin: 2px 0 6px; }
+.d-toc a {
+  display: block; padding: 5px 0;
+  color: var(--ink-2); text-decoration: none;
+}
+.d-toc a:hover { color: var(--accent-ink); }
+.d-body { max-width: 72ch; }
+.d-body section { padding-top: 8px; margin-bottom: 36px; scroll-margin-top: 72px; }
+.d-body h2 {
+  font-size: 19px; font-weight: 600; letter-spacing: -0.01em;
+  margin: 0 0 12px; padding-bottom: 8px;
+  border-bottom: 1px solid var(--rule);
+}
+.d-body h3 {
+  font-size: 14px; font-weight: 600;
+  margin: 22px 0 8px; scroll-margin-top: 72px;
+}
+.d-body p { font-size: 14px; line-height: 1.65; color: var(--ink-2); margin: 0 0 12px; }
+.d-body p strong { color: var(--ink); }
+@media (max-width: 760px) {
+  .d-layout { grid-template-columns: 1fr; gap: 12px; }
+  .d-toc { position: static; border-bottom: 1px solid var(--rule); padding-bottom: 10px; }
+}

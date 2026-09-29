@@ -75,7 +75,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 venue&rsquo;s own audited router. Not affiliated with Uniswap, Aerodrome,
                 SushiSwap, BaseSwap or Coinbase.
               </span>
-              <a href="/docs">Method &amp; limitations</a>
+              <a href="/docs">Docs</a>
             </div>
           </footer>
         </Providers>

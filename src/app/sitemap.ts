@@ -3,7 +3,7 @@ import type { MetadataRoute } from 'next';
 const BASE = 'https://pathiel-dex.vercel.app';
 
 export default function sitemap(): MetadataRoute.Sitemap {
-  return ['', '/depth', '/venues', '/docs'].map((path) => ({
+  return ['', '/venues', '/docs'].map((path) => ({
     url: `${BASE}${path}`,
     lastModified: new Date(),
     changeFrequency: 'weekly' as const,

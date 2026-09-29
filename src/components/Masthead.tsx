@@ -22,13 +22,10 @@ import { WalletModal } from './WalletModal';
  */
 const NAV = [
   { href: '/', label: 'Trade' },
-  { href: '/tools', label: 'Tools' },
-  { href: '/depth', label: 'Depth' },
   { href: '/venues', label: 'Venues' },
   { href: '/perps', label: 'Perps' },
-  { href: '/backtest', label: 'Backtest' },
   { href: '/account', label: 'Account' },
-  { href: '/docs', label: 'Method' },
+  { href: '/docs', label: 'Docs' },
 ];
 
 /** EIP-1193 rejection. 4001 is the user declining; -32002 is one already open. */

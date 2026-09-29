@@ -15,6 +15,13 @@ import { LEGAL_VERSION } from './legal';
 
 const KEY = 'pathiel.terms';
 
+/**
+ * The same acceptance, as a cookie, so the middleware can gate the site on it.
+ * Browser storage never reaches the server; this does.
+ */
+export const TERMS_COOKIE = 'pathiel_terms';
+const TERMS_COOKIE_MAX_AGE = 365 * 24 * 60 * 60;
+
 /** The version this browser accepted, or null. */
 export function acceptedVersion(): string | null {
   try {
@@ -34,6 +41,7 @@ export function acceptTerms(): string {
     // Nothing to do: the checkbox still governs this session, and the next
     // visit will ask again.
   }
+  document.cookie = `${TERMS_COOKIE}=${LEGAL_VERSION}; path=/; max-age=${TERMS_COOKIE_MAX_AGE}; samesite=lax`;
   return LEGAL_VERSION;
 }
 
