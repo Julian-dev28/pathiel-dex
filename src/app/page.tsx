@@ -6,7 +6,7 @@ export default function Page() {
     <>
       <PageHead
         title="Trade"
-        lede="Swap any pair, buy stocks, or trade perps with leverage. The router picks the chain."
+        lede="One account across every chain. Swap anything, or trade perps with leverage — the router decides where."
       />
       <TradeView />
     </>

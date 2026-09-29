@@ -1,18 +1,17 @@
 'use client';
 
 import { useState } from 'react';
-import { BuyPanel } from './BuyPanel';
 import { PerpsTrade } from './PerpsTrade';
 import { Terminal } from './Terminal';
 import { Segmented } from './ui';
 
-type Mode = 'swap' | 'buy' | 'perps';
+type Mode = 'swap' | 'perps';
 
 /**
- * One trade surface. Swap is any pair, routed to whichever chain and venue
- * pays best; Buy spends the trading account's dollars on a stock; Perps opens
- * a leveraged position on Hyperliquid. Only the chosen one is mounted, so the
- * others are not quoting in the background.
+ * One trade surface on the one trading account. Swap is any asset for any
+ * other, routed across every chain the account holds money on; Perps opens a
+ * leveraged position on Hyperliquid. Only the chosen one is mounted, so the
+ * other is not quoting in the background.
  */
 export function TradeView() {
   const [mode, setMode] = useState<Mode>('swap');
@@ -25,12 +24,11 @@ export function TradeView() {
           onChange={setMode}
           options={[
             { value: 'swap', label: 'Swap' },
-            { value: 'buy', label: 'Buy stocks' },
             { value: 'perps', label: 'Perps' },
           ]}
         />
       </div>
-      {mode === 'swap' ? <Terminal /> : mode === 'buy' ? <BuyPanel /> : <PerpsTrade />}
+      {mode === 'swap' ? <Terminal /> : <PerpsTrade />}
     </>
   );
 }

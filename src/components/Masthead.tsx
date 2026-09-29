@@ -23,7 +23,6 @@ import { WalletModal } from './WalletModal';
 const NAV = [
   { href: '/', label: 'Trade' },
   { href: '/venues', label: 'Venues' },
-  { href: '/perps', label: 'Perps' },
   { href: '/account', label: 'Account' },
   { href: '/docs', label: 'Docs' },
 ];

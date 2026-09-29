@@ -126,7 +126,7 @@ export class RouteError extends Error {}
  * with a few dollars and checks the answer clears the floor. A quote that
  * delivers less than the floor is no use and is refused rather than sent.
  */
-async function buyGasQuote(
+export async function buyGasQuote(
   account: Address,
   from: ChainConfig,
   dest: ChainConfig,
@@ -457,7 +457,7 @@ const dollarsOn = async (account: Address, chain: ChainKey): Promise<bigint> =>
  * told their money is in transit instead of watching something that means
  * nothing.
  */
-async function waitFor(
+export async function waitFor(
   read: () => Promise<bigint>,
   target: bigint,
   timeoutMs = 120_000,
