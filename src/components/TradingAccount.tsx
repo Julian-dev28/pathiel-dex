@@ -257,9 +257,9 @@ export function TradingAccount() {
           <Reveal summary="What exactly am I signing?">
             <pre className="mono c-scroll">{accountMessage(owner)}</pre>
             <p>
-              The signature is hashed to produce a private key, which is held in this tab&rsquo;s
-              memory and written to nothing — no storage, no cookie, no server. Reloading the page
-              asks for it again.
+              The signature is hashed to produce a private key, which this browser remembers until
+              you sign out. It never reaches a server. Anything that can run script on this page
+              could read it, so sign out on a shared computer.
             </p>
           </Reveal>
         </Card>
@@ -335,7 +335,7 @@ export function TradingAccount() {
         lede={`${addr(derived)} — derived from your signature, funded by you, emptied back to you whenever you ask.`}
       />
 
-      <Card title="Your trading account" step={1} meta={<Chip tone="good">unlocked in this tab</Chip>}>
+      <Card title="Your trading account" step={1} meta={<Chip tone="good">signed in</Chip>}>
         <Answers>
           <Answer
             label="Send funds to"
@@ -348,7 +348,7 @@ export function TradingAccount() {
         <Disclosures />
         <div className="c-guarantee">
           <span>
-            Signing out forgets the key held in this tab and nothing else. The account keeps every
+            Signing out deletes the key this browser remembers and nothing else. The account keeps every
             token in it, and signing the same message again brings you back to the same address.
           </span>
           <button className="c-ghost" type="button" onClick={lock}>

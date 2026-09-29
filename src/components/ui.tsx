@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useId, useState } from 'react';
+import { useId } from 'react';
 
 /**
  * The interface vocabulary.
@@ -241,40 +241,4 @@ export function Segmented<T extends string | number>({
       ))}
     </div>
   );
-}
-
-/* ── focus mode ───────────────────────────────────────────────────────── */
-
-/**
- * Hides every secondary panel on the page.
- *
- * The terminal has a lot to say and most of it is not needed while deciding
- * whether to press the button. This collapses the page to the trade itself and
- * remembers the choice, so someone who wants the quiet version gets it every
- * time rather than re-hiding things on each visit.
- */
-export function useFocusMode(): [boolean, () => void] {
-  const [focus, setFocus] = useState(false);
-
-  useEffect(() => {
-    try {
-      setFocus(localStorage.getItem('pathiel-focus') === '1');
-    } catch {
-      /* storage can be unavailable; the default is fine */
-    }
-  }, []);
-
-  const toggle = () => {
-    setFocus((f) => {
-      const next = !f;
-      try {
-        localStorage.setItem('pathiel-focus', next ? '1' : '0');
-      } catch {
-        /* per-visit only, then */
-      }
-      return next;
-    });
-  };
-
-  return [focus, toggle];
 }

@@ -119,8 +119,11 @@ export function canonicalSignature(signature: Hex): Hex {
  * (EIP-1271 validates rather than recovers), and is refused by the length
  * check rather than silently given an account nobody holds the key to.
  */
+/** The private key a signature derives. */
+export const deriveKey = (signature: Hex): Hex => keccak256(canonicalSignature(signature));
+
 export function deriveAccount(signature: Hex): PrivateKeyAccount {
-  return privateKeyToAccount(keccak256(canonicalSignature(signature)));
+  return privateKeyToAccount(deriveKey(signature));
 }
 
 /** The account's address, which is where the customer sends funds. */
@@ -140,6 +143,12 @@ export class AccountKeyring {
 
   unlock(signature: Hex): PrivateKeyAccount {
     this.account = deriveAccount(signature);
+    return this.account;
+  }
+
+  /** Reinstate an account from a key remembered by an earlier unlock. */
+  restore(privateKey: Hex): PrivateKeyAccount {
+    this.account = privateKeyToAccount(privateKey);
     return this.account;
   }
 

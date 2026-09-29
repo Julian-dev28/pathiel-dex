@@ -337,12 +337,6 @@
 
 /* ── trade page ───────────────────────────────────────────────────────── */
 
-.c-tradehead {
-  display: flex; align-items: baseline; gap: 12px;
-  margin: 6px 0 18px;
-}
-.c-tradehead .c-pagetitle { margin: 0; }
-
 .c-ghost {
   padding: 7px 10px; min-height: 36px;
   font-size: 12.5px; font-weight: 500;
@@ -350,7 +344,6 @@
   border: 0; border-radius: 4px; cursor: pointer;
 }
 .c-ghost:hover { color: var(--ink); background: var(--surface-2); }
-.c-tradehead .c-ghost { margin-left: auto; }
 
 /* The amount field is the input *and* the headline figure, so it is set at
    figure size. Anything smaller invites a typo nobody notices. */

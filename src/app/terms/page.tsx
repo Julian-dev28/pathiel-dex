@@ -10,7 +10,7 @@ export const metadata = { title: 'Terms of Service' };
  * user can expect is stated in the words they would use themselves, because a
  * term nobody understood is a term that will not hold when it matters. The
  * substance is shaped by what this product actually is — non-custodial,
- * invite-only, in beta, and pointed at venues it does not operate.
+ * in beta, and pointed at venues it does not operate.
  */
 export default function Page() {
   return (
@@ -29,8 +29,9 @@ export default function Page() {
         <p>
           <strong>We never hold your assets.</strong> The software derives a trading account from a
           signature produced by your own wallet. The private key to that account is computed in
-          your browser, is held only in memory for the life of a browser tab, and is never
-          transmitted to us or stored by us. We cannot access your funds, move them, freeze them,
+          your browser, is remembered only in your browser until you sign out, and is never
+          transmitted to us or stored by us. Anyone with access to your browser or able to run
+          code in it may be able to read that key; signing out deletes it. We cannot access your funds, move them, freeze them,
           or recover them. No part of this service is a custody, deposit-taking, money transmission
           or payment service.
         </p>
@@ -41,12 +42,11 @@ export default function Page() {
         </p>
       </Card>
 
-      <Card title="2. Beta software, by invitation" step={2}>
+      <Card title="2. Beta software" step={2}>
         <p>
-          Access is <strong>invite-only</strong> and the software is <strong>beta</strong>: it is
-          incomplete, under active development, and may contain defects. It may change, break, or
-          be withdrawn without notice. Invitations are personal to you, non-transferable, and may
-          be revoked at any time for any reason or none.
+          The software is <strong>beta</strong>: it is incomplete, under active development, and
+          may contain defects. It may change, break, or be withdrawn without notice. Access may be
+          withdrawn at any time for any reason or none.
         </p>
         <p>
           You should not commit funds you are unwilling to lose entirely. We make no representation

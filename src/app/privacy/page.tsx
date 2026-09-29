@@ -23,8 +23,8 @@ export default function Page() {
         <ul className="c-list-plain">
           <li>
             <strong>The signature that derives your trading account</strong>, and the private key
-            computed from it. Both are produced in the page and held in memory. Neither is
-            transmitted, logged or stored by us, and a closed tab forgets them.
+            computed from it. Both are produced in the page. The key is remembered in your browser
+            until you sign out; neither is transmitted, logged or stored by us.
           </li>
           <li>
             <strong>Your wallet&rsquo;s private keys.</strong> We never see them; your wallet signs
@@ -39,10 +39,6 @@ export default function Page() {
 
       <Card title="What we do collect" step={2}>
         <ul className="c-list-plain">
-          <li>
-            <strong>Your invite code</strong>, so we can tell who has access and revoke it. Held
-            against the invitation rather than against your identity.
-          </li>
           <li>
             <strong>Addresses you ask about.</strong> Requesting a quote, a plan or a balance sends
             the relevant token, chain and address to our server so it can read public chain state.
@@ -117,9 +113,8 @@ export default function Page() {
           <p>
             We use no advertising or tracking cookies. The interface stores small preferences in
             your browser — the chain you last selected, whether you accepted the terms and which
-            version, and your invite access — and these stay on your device. The trading
-            account&rsquo;s key is deliberately <em>not</em> among them: it is held in memory only,
-            which is why a reload asks you to sign again.
+            version, and your trading account&rsquo;s key until you sign out — and these stay on
+            your device.
           </p>
         </Reveal>
       </Card>

@@ -10,20 +10,27 @@ import {
   useChainId,
 } from 'wagmi';
 import { useQuery } from '@tanstack/react-query';
-import { bySymbol } from '@/lib/chain';
+import { bySymbol, CHAIN_LIST } from '@/lib/chain';
 import { fetchQuote, type QuoteResponse, type ApiVenue } from '@/lib/api';
 import { toBase, fromBase, sig, bps, addr } from '@/lib/format';
-import { buildSwap, approvalTx, approvalLabel, pendingApprovals, minOut, ERC20 } from '@/lib/execute';
-import { usePair } from './ChainProvider';
+import {
+  buildSwap,
+  approvalTx,
+  approvalLabel,
+  pendingApprovals,
+  minOut,
+  ERC20,
+} from '@/lib/execute';
+import { useChain, usePair } from './ChainProvider';
 import { TokenSelect } from './TokenSelect';
 import { RoutePath } from './RoutePath';
-import { LiveTape } from './LiveTape';
-import { CrossChainCard } from './CrossChainCard';
 import { useTradingAccount } from './AccountProvider';
 import { swapFromAccount, TradeError, type SentStep } from '@/lib/account/trade';
 import { AccountPanel } from './AccountPanel';
 import {
   Card,
+  Answer,
+  Answers,
   Reveal,
   Chip,
   Suggest,
@@ -31,7 +38,6 @@ import {
   ErrorNote,
   Loading,
   Segmented,
-  useFocusMode,
 } from './ui';
 
 const SLIPPAGE_CHOICES = [10, 30, 50, 100];
@@ -49,33 +55,37 @@ function impactBps(v: ApiVenue | undefined): number | null {
   return ((pxFull - pxSmall) / pxSmall) * 10_000;
 }
 
-/**
- * The trade page.
- *
- * Restructured around one question at a time. This used to be two dense columns
- * plus three tables, all visible at once, with the button somewhere in the
- * middle and fine print competing with it for attention. It is now a short
- * numbered sequence — what you pay, what you get, the one risk worth acting on,
- * then the button — with everything else collapsed underneath.
- *
- * The rule the layout enforces: **nothing sits between the number and the
- * button.** Every explanation that used to live inline is now a closed panel,
- * so the reasoning is still there for anyone who wants it and in nobody's way
- * if they do not.
- */
-export function Terminal() {
-  const { chain, inSym, outSym, setInSym, setOutSym, flip } = usePair();
-  const [amount, setAmount] = useState('1');
-  const [slippageBps, setSlippageBps] = useState(50);
-  const [acknowledgedImpact, setAcknowledgedImpact] = useState(false);
-  const [focus, toggleFocus] = useFocusMode();
-
-  const [advice, setAdvice] = useState<{
+/** What `/api/analyze` returns, as far as the ticket reads it. */
+type Analysis = {
+  recommendation: {
     recommendedBps: number;
     confidence: 'high' | 'medium' | 'low';
     savedVsDefaultBps: number;
     driftP95Bps: number;
-  } | null>(null);
+  };
+  capacity: { maxImpactBps: number; venue: string; size: string; atLeast: boolean }[];
+  fragmentation: { percent: number; venuesInSplit: number; venuesQuoted: number };
+  arb: { buy: { venue: string }; sell: { venue: string }; netBps: number } | null;
+};
+
+/**
+ * The swap ticket.
+ *
+ * One card: what you pay, what you get, the slippage, then the button. The
+ * measurements that used to be a separate tools page — capacity, how spread
+ * the market is, a round trip, every route — share this ticket's pair and
+ * amount, so they sit in one closed "Details" panel under the button rather
+ * than asking for the same inputs twice.
+ */
+export function Terminal() {
+  const { chain, inSym, outSym, setInSym, setOutSym, flip } = usePair();
+  const { setChain } = useChain();
+  const [amount, setAmount] = useState('1');
+  const [slippageBps, setSlippageBps] = useState(50);
+  const [acknowledgedImpact, setAcknowledgedImpact] = useState(false);
+
+  const [analysis, setAnalysis] = useState<Analysis | null>(null);
+  const advice = analysis?.recommendation ?? null;
 
   const [rawQuote, setQuote] = useState<QuoteResponse | null>(null);
   // A quote from the chain the user just switched away from must never reach
@@ -95,9 +105,11 @@ export function Terminal() {
   // wrong-chain check below does not apply to it.
   const { account } = useTradingAccount();
   const signer = account?.address ?? address;
-  const [accountRun, setAccountRun] = useState<{ sending: boolean; sent: SentStep[]; error: string | null }>(
-    { sending: false, sent: [], error: null },
-  );
+  const [accountRun, setAccountRun] = useState<{
+    sending: boolean;
+    sent: SentStep[];
+    error: string | null;
+  }>({ sending: false, sent: [], error: null });
   const chainId = useChainId();
   const wrongChain = !account && isConnected && chainId !== chain.id;
 
@@ -149,11 +161,12 @@ export function Terminal() {
   useEffect(() => setAcknowledgedImpact(false), [inSym, outSym, amount, pickedId]);
   useEffect(() => setPickedId(null), [chain.key, inSym, outSym]);
 
-  // Slippage advice arrives late and never blocks the form. Nothing here
-  // changes the tolerance on the user's behalf — it offers, they apply.
+  // Slippage advice and the details arrive late and never block the form.
+  // Nothing here changes the tolerance on the user's behalf — it offers, they
+  // apply.
   useEffect(() => {
     let cancelled = false;
-    setAdvice(null);
+    setAnalysis(null);
     if (amountIn <= 0n || inSym === outSym) return;
     const t = setTimeout(() => {
       fetch(
@@ -162,7 +175,7 @@ export function Terminal() {
       )
         .then((r) => r.json())
         .then((b) => {
-          if (!cancelled && !b.error && b.recommendation) setAdvice(b.recommendation);
+          if (!cancelled && !b.error && b.recommendation) setAnalysis(b as Analysis);
         })
         .catch(() => {
           /* advice is optional; the form does not depend on it */
@@ -301,22 +314,24 @@ export function Terminal() {
 
   return (
     <>
-      <div className="c-tradehead">
-        <h1 className="c-pagetitle">Swap</h1>
-        <button className="c-ghost" type="button" onClick={toggleFocus} aria-pressed={focus}>
-          {focus ? 'Show details' : 'Hide details'}
-        </button>
-      </div>
-
-      {/* ── 1 · the pair ─────────────────────────────────────────────── */}
-      {/* The standard two-slot layout: what leaves the wallet on top, what
-          arrives underneath, the flip between them. */}
       <Card
         title="Swap"
-        step={1}
-        meta={quote ? <span className="mono">block {quote.blockNumber.toString()}</span> : undefined}
+        tone={highImpact ? (severeImpact ? 'bad' : 'warn') : 'default'}
+        meta={
+          quote ? <span className="mono">block {quote.blockNumber.toString()}</span> : undefined
+        }
       >
-        <div className="c-slot-label">You pay</div>
+        <div className="c-slot-label">Chain</div>
+        <Segmented
+          label="Chain"
+          value={chain.key}
+          onChange={setChain}
+          options={CHAIN_LIST.map((c) => ({ value: c.key, label: c.name }))}
+        />
+
+        <div className="c-slot-label" style={{ marginTop: 16 }}>
+          You pay
+        </div>
         <div className="c-field">
           <input
             className="c-amount"
@@ -361,7 +376,10 @@ export function Terminal() {
 
         <div className="c-slot-label">You receive</div>
         <div className="c-field">
-          <output className={`c-amount${quote ? '' : ' c-t-mut'}`} aria-label={`${tokenOut.symbol} received`}>
+          <output
+            className={`c-amount${quote ? '' : ' c-t-mut'}`}
+            aria-label={`${tokenOut.symbol} received`}
+          >
             {quote ? sig(expectedOut, tokenOut) : '0.0'}
           </output>
           <TokenSelect value={outSym} onChange={setOutSym} tokens={chain.tokens} exclude={inSym} />
@@ -393,15 +411,22 @@ export function Terminal() {
                 <select
                   className="c-route-select"
                   value={execVenue?.id ?? ''}
-                  onChange={(e) => setPickedId(e.target.value === bestVenue?.id ? null : e.target.value)}
+                  onChange={(e) =>
+                    setPickedId(e.target.value === bestVenue?.id ? null : e.target.value)
+                  }
                 >
                   {routeOptions.map((v) => {
                     const best = route!.single.amountOut;
-                    const delta = best > 0n ? Number(((v.amountOutAtFull - best) * 10_000n) / best) : 0;
+                    const delta =
+                      best > 0n ? Number(((v.amountOutAtFull - best) * 10_000n) / best) : 0;
                     return (
                       <option key={v.venue.id} value={v.venue.id}>
                         {v.venue.label} — {sig(v.amountOutAtFull, tokenOut)} {tokenOut.symbol}
-                        {v.venue.id === bestVenue?.id ? ' (best)' : delta === 0 ? '' : ` (${bps(delta)})`}
+                        {v.venue.id === bestVenue?.id
+                          ? ' (best)'
+                          : delta === 0
+                            ? ''
+                            : ` (${bps(delta)})`}
                       </option>
                     );
                   })}
@@ -422,21 +447,16 @@ export function Terminal() {
             </div>
           </>
         )}
-      </Card>
 
-      {/* ── 2 · the one risk worth acting on ────────────────────────── */}
-      <Card
-        title="Slippage"
-        step={2}
-        tone={highImpact ? (severeImpact ? 'bad' : 'warn') : 'default'}
-        meta={
-          quote ? (
-            <span>
-              {sig(exposure, tokenOut)} {tokenOut.symbol} at risk
+        <div className="c-slot-label" style={{ marginTop: 16 }}>
+          Maximum slippage
+          {quote && (
+            <span className="mut">
+              {' '}
+              · {sig(exposure, tokenOut)} {tokenOut.symbol} at risk
             </span>
-          ) : undefined
-        }
-      >
+          )}
+        </div>
         <Segmented
           label="Maximum slippage"
           value={slippageBps}
@@ -451,8 +471,8 @@ export function Terminal() {
           >
             {advice.confidence === 'low' ? (
               <>
-                Too few recent trades here to measure.{' '}
-                {(advice.recommendedBps / 100).toFixed(2)}% is the safe default.
+                Too few recent trades here to measure. {(advice.recommendedBps / 100).toFixed(2)}%
+                is the safe default.
               </>
             ) : (
               <>
@@ -480,74 +500,81 @@ export function Terminal() {
           </label>
         )}
 
-        <Reveal summary="What does slippage actually cost me?">
-          <p>
-            Your tolerance is not a safety margin — it is a standing offer. Someone can push the
-            pool until you receive exactly your minimum and keep the difference, so the gap between
-            the quote and your floor is the most they can take. Right now that gap is{' '}
-            <strong className="mono">
-              {sig(exposure, tokenOut)} {tokenOut.symbol}
-            </strong>
-            .
-          </p>
-          <p>
-            The floor itself is enforced on-chain by {execVenue?.label ?? 'the venue'}, not by this
-            page. If the price moves past it, the trade reverts rather than filling badly.
-          </p>
-        </Reveal>
-      </Card>
+        {/* ── the action ──────────────────────────────────────────────── */}
+        <button
+          className="c-go"
+          onClick={needsApproval && !account ? onApprove : onSwap}
+          disabled={
+            !isConnected ||
+            insufficient ||
+            (needsApproval && !account
+              ? isPending || mining
+              : blocked || isPending || mining || accountRun.sending)
+          }
+          type="button"
+        >
+          {buttonLabel()}
+        </button>
 
-      {/* ── the action ──────────────────────────────────────────────── */}
-      <button
-        className="c-go"
-        onClick={needsApproval && !account ? onApprove : onSwap}
-        disabled={
-          !isConnected ||
-          insufficient ||
-          (needsApproval && !account
-            ? isPending || mining
-            : blocked || isPending || mining || accountRun.sending)
-        }
-        type="button"
-      >
-        {buttonLabel()}
-      </button>
+        {txError && <ErrorNote>{txError.message.split('\n')[0]}</ErrorNote>}
 
-      {txError && <ErrorNote>{txError.message.split('\n')[0]}</ErrorNote>}
+        {accountRun.error && (
+          <ErrorNote>
+            {accountRun.error}
+            {accountRun.sent.length > 0
+              ? ` — ${accountRun.sent.map((s) => s.description).join(', ')} already landed.`
+              : ' Nothing was sent.'}
+          </ErrorNote>
+        )}
 
-      {accountRun.error && (
-        <ErrorNote>
-          {accountRun.error}
-          {accountRun.sent.length > 0
-            ? ` — ${accountRun.sent.map((s) => s.description).join(', ')} already landed.`
-            : ' Nothing was sent.'}
-        </ErrorNote>
-      )}
+        {txHash && (
+          <div className={`c-tx${mined ? ' ok' : ''}`}>
+            <span>{mined ? '✓ Confirmed' : 'Pending…'}</span>
+            <a href={`${chain.explorer}/tx/${txHash}`} target="_blank" rel="noreferrer">
+              {addr(txHash)} on {chain.explorerName}
+            </a>
+          </div>
+        )}
 
-      {txHash && (
-        <div className={`c-tx${mined ? ' ok' : ''}`}>
-          <span>{mined ? '✓ Confirmed' : 'Pending…'}</span>
-          <a href={`${chain.explorer}/tx/${txHash}`} target="_blank" rel="noreferrer">
-            {addr(txHash)} on {chain.explorerName}
-          </a>
-        </div>
-      )}
+        {quote && route && (
+          <Reveal summary="Details">
+            {analysis && (
+              <Answers>
+                <Answer
+                  label={`Absorbs at ≤ ${analysis.capacity[0]?.maxImpactBps ?? 0} bp impact`}
+                  value={
+                    <>
+                      {analysis.capacity[0]?.atLeast && <span className="c-t-mut">≥ </span>}
+                      {sig(BigInt(analysis.capacity[0]?.size ?? '0'), tokenIn, 5)}
+                    </>
+                  }
+                  unit={tokenIn.symbol}
+                  note={analysis.capacity[0]?.venue}
+                />
+                <Answer
+                  label="Off the best venue"
+                  value={analysis.fragmentation.percent.toFixed(1)}
+                  unit="%"
+                  note={`spread across ${analysis.fragmentation.venuesInSplit} of ${analysis.fragmentation.venuesQuoted} venues`}
+                />
+                <Answer
+                  label="Two-venue round trip"
+                  value={analysis.arb ? bps(analysis.arb.netBps) : 'none'}
+                  note={
+                    analysis.arb
+                      ? `${analysis.arb.buy.venue} → ${analysis.arb.sell.venue}, net of gas`
+                      : 'no profitable loop at any size'
+                  }
+                />
+              </Answers>
+            )}
 
-      {/* ── everything else, below the fold and closed ──────────────── */}
-      {!focus && quote && route && (
-        <div className="c-secondary">
-          <Card
-            title="Could a split do better?"
-            meta={
-              route.chosen === 'split' ? (
-                <Chip tone="good">yes, {bps(route.netEdgeBps)}</Chip>
-              ) : (
-                <Chip tone="mut">no</Chip>
-              )
-            }
-          >
-            {route.chosen === 'split' ? (
+            {route.chosen === 'split' && (
               <>
+                <p>
+                  A split would do better by <strong>{bps(route.netEdgeBps)}</strong>. It is shown
+                  for reference: executing it needs a router contract that is not deployed.
+                </p>
                 <div className="c-alloc">
                   {route.split.allocations.map((a, i) => (
                     <div
@@ -568,24 +595,9 @@ export function Terminal() {
                   ))}
                 </ul>
               </>
-            ) : (
-              <Empty>One venue is the best answer at this size.</Empty>
             )}
 
-            <Reveal summary="Why isn't the split executed?">
-              <p>
-                Splitting atomically needs a router contract that holds the intermediate balance
-                mid-trade. That contract is written and fork-tested in{' '}
-                <code>contracts/SplitRouter.sol</code> but deliberately not deployed — shipping
-                unaudited code that takes custody to capture a few basis points is a bad trade.
-              </p>
-            </Reveal>
-          </Card>
-
-          <CrossChainCard chain={chain.key} inSym={inSym} outSym={outSym} amount={amount} />
-
-          <Card title="Every route" meta={`${quote.venues.length} quoted`}>
-            <div className="c-scroll">
+            <div className="c-scroll" style={{ marginTop: 16 }}>
               <table className="c-table">
                 <thead>
                   <tr>
@@ -619,17 +631,15 @@ export function Terminal() {
                 </tbody>
               </table>
             </div>
-          </Card>
-
-          <LiveTape inSym={inSym} outSym={outSym} amount={amount} tokenOut={tokenOut} />
-        </div>
-      )}
+          </Reveal>
+        )}
+      </Card>
 
       <AccountPanel />
 
       <p className="c-foot-note">
-        Unaudited. Trades execute through Uniswap&rsquo;s, PancakeSwap&rsquo;s and
-        Aerodrome&rsquo;s own audited routers — this app never holds your funds.
+        Unaudited. Trades execute through Uniswap&rsquo;s, PancakeSwap&rsquo;s and Aerodrome&rsquo;s
+        own audited routers — this app never holds your funds.
       </p>
     </>
   );

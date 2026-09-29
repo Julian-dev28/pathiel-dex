@@ -12,8 +12,8 @@
  * document without raising it leaves people bound to something they never saw.
  */
 
-export const LEGAL_VERSION = '0.1.0-beta';
-export const LEGAL_UPDATED = '24 September 2026';
+export const LEGAL_VERSION = '0.2.0-beta';
+export const LEGAL_UPDATED = '29 September 2026';
 
 export const OPERATOR = {
   product: 'Pathiel',
