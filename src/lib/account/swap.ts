@@ -160,11 +160,16 @@ export class SwapError extends Error {}
 const baseUnits = (units: number, token: Token) =>
   parseUnits(units.toFixed(Math.min(token.decimals, 9)), token.decimals);
 
-/** A share never asks for more than the chain holds, whatever rounding did. */
+/**
+ * A share never asks for more than the chain holds, whatever rounding did,
+ * and a share within rounding of the whole holding takes all of it — "use
+ * max" should empty the chain, not leave a billionth behind.
+ */
 const capped = (h: Holding, units: number) => {
   const want = baseUnits(units, h.token);
   const max = h.erc20 + h.wrappable;
-  return want > max ? max : want;
+  const dust = h.token.decimals > 9 ? 10n ** BigInt(h.token.decimals - 9) : 1n;
+  return want >= max || max - want < dust ? max : want;
 };
 
 /** Price one chain's share at a given size: in place where listed, else crossed. */
